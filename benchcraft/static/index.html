@@ -21,14 +21,16 @@
     --ok-bg: #eaf4ee;
     --ok-ink: #2f6b3f;
     --r: 6px;
-    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --text: Charter, "Iowan Old Style", "Palatino Linotype", Palatino, ui-serif,
+            Georgia, "Times New Roman", Times, serif;
+    --serif: var(--text);
     --mono: ui-monospace, "SF Mono", Menlo, "Roboto Mono", monospace;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
-    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Helvetica, sans-serif;
-    -webkit-font-smoothing: antialiased;
+    font: 16px/1.6 var(--text);
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
   }
 
   header {
@@ -36,16 +38,16 @@
     padding: 11px 20px; border-bottom: 1px solid var(--rule); background: var(--panel);
   }
   .brand { display: flex; align-items: center; gap: 9px; }
-  .brand img { width: 32px; height: 32px; object-fit: contain; }
-  .brand h1 { font: 600 17px/1.15 var(--serif); margin: 0; }
-  .brand .tag { font-size: 11.5px; color: var(--ink-3); }
+  .brand img { width: 46px; height: 46px; object-fit: contain; }
+  .brand h1 { font: 600 21px/1.1 var(--text); margin: 0; letter-spacing: -.01em; }
   .now-title {
     flex: 1; text-align: center; font: 600 13.5px/1.3 var(--serif);
     color: var(--ink-2); padding: 0 12px;
   }
   .stages { display: flex; align-items: center; gap: 5px; }
+  .stage svg { width: 16px; height: 12px; flex: none; }
   .stage {
-    display: flex; align-items: center; gap: 7px;
+    display: flex; align-items: center; gap: 8px;
     font: 500 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase;
     padding: 9px 12px; border-radius: var(--r);
     background: #f0efea; color: var(--ink-3); border: 1px solid transparent;
@@ -82,6 +84,11 @@
     border-left: 3px solid transparent;
   }
   .log-item:hover { background: #faf9f6; }
+  .log-item[draggable="true"] { cursor: grab; }
+  .log-item.dragging { opacity: .35; }
+  .drop-zone.over {
+    background: var(--ai-soft); outline: 2px dashed var(--ai); outline-offset: -3px;
+  }
   .log-item.on { background: #f2f0ea; border-left-color: var(--navy); }
   .log-item .t { font-weight: 600; font-size: 13.5px; line-height: 1.35; }
   .log-meta { display: flex; align-items: center; gap: 9px; margin-top: 6px; }
@@ -92,7 +99,7 @@
   .badge.decide { color: var(--ok-ink); }
   .log-meta .date { font: 11px var(--mono); color: var(--ink-3); }
   .folder-head {
-    padding: 13px 16px 5px; font: 600 10px var(--mono); letter-spacing: .1em;
+    padding: 13px 16px 5px; border-radius: 4px; font: 600 10px var(--mono); letter-spacing: .1em;
     text-transform: uppercase; color: var(--ink-3);
     display: flex; justify-content: space-between; align-items: center;
   }
@@ -309,10 +316,7 @@
 <header>
   <div class="brand">
     <img src="/static/logo-mark.png" alt="">
-    <div>
-      <h1>Benchcraft</h1>
-      <div class="tag">form your view, then meet the argument</div>
-    </div>
+    <h1>Benchcraft</h1>
   </div>
   <div class="now-title" id="now-title"></div>
   <div class="stages" id="stages"></div>

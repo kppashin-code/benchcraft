@@ -515,6 +515,29 @@ def set_folder(experiment_id: int, body: dict):
     return db.experiment_bundle(experiment_id)
 
 
+@app.get("/api/projects/{project_id}/suggestions")
+def suggestions(project_id: int):
+    keys: dict[str, dict[str, int]] = {}
+    for e in db.rows("SELECT context_json FROM experiments WHERE project_id = ?", (project_id,)):
+        for k, v in (json.loads(e["context_json"] or "{}")).items():
+            k, v = k.strip(), str(v).strip()
+            if not k or not v:
+                continue
+            keys.setdefault(k, {})
+            keys[k][v] = keys[k].get(v, 0) + 1
+
+    values = {
+        k: [v for v, _ in sorted(vs.items(), key=lambda kv: (-kv[1], kv[0]))]
+        for k, vs in keys.items()
+    }
+    ordered_keys = sorted(keys, key=lambda k: (-sum(keys[k].values()), k))
+
+    terms = [g["term"] for g in db.rows(
+        "SELECT term FROM glossary WHERE project_id = ? ORDER BY term", (project_id,))]
+
+    return {"context_keys": ordered_keys, "context_values": values, "terms": terms}
+
+
 @app.get("/api/zotero/status")
 def zotero_status():
     return zotero.status()

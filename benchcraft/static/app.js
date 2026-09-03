@@ -10,8 +10,23 @@ let GLOSS = [], MATCHES = [], CONNS = [], FOLDERS = [], LOG = [];
 let TSTATUS = { ready: false, missing: [] };
 let ZSTATUS = { ready: false }, ZCOLLS = [], ZITEMS = [], ZALL = {};
 let ZFILTER = { coll: "", engaged: true };
+let SUGG = { context_keys: [], context_values: {}, terms: [] };
 
 const STAGE_ORDER = ["notice", "commit", "challenge", "decide"];
+
+const STAGE_ICON = {
+  notice: `<svg viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="1.6"
+    stroke-linecap="round"><path d="M1 7h9"/><circle cx="14.5" cy="7" r="2.6"/></svg>`,
+  commit: `<svg viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="1.6"
+    stroke-linecap="round"><path d="M1 7h11"/><path d="M15.5 2.2v9.6"/></svg>`,
+  challenge: `<svg viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="1.6"
+    stroke-linecap="round"><path d="M1 7h5"/><path d="M6 7c4 0 4-5 8-5"/><path d="M6 7h8"/>
+    <path d="M6 7c4 0 4 5 8 5"/></svg>`,
+  decide: `<svg viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="1.6"
+    stroke-linecap="round"><path d="M1 7h5"/><path d="M6 7c4 0 4-5 8-5" opacity=".2"/>
+    <path d="M6 7c4 0 4 5 8 5" opacity=".2"/><path d="M6 7h9" stroke-width="2.4"/>
+    <circle cx="17" cy="7" r="2" fill="currentColor" stroke="none"/></svg>`,
+};
 
 async function api(path, method = "GET", body) {
   const r = await fetch(`/api${path}`, {
@@ -48,9 +63,10 @@ async function boot() {
 }
 
 async function refreshList(selectId) {
-  [LOG, FOLDERS] = await Promise.all([
+  [LOG, FOLDERS, SUGG] = await Promise.all([
     api(`/projects/${PROJECT.id}/experiments`),
     api(`/projects/${PROJECT.id}/folders`),
+    api(`/projects/${PROJECT.id}/suggestions`),
   ]);
   renderLog();
   const target = selectId || (EXP && EXP.id) || (LOG[0] && LOG[0].id);
@@ -65,7 +81,8 @@ function renderLog() {
 
   const item = (e) => {
     const st = e.stage || "notice";
-    return `<div class="log-item ${EXP && e.id === EXP.id ? "on" : ""}" data-id="${e.id}">
+    return `<div class="log-item ${EXP && e.id === EXP.id ? "on" : ""}"
+      draggable="true" data-id="${e.id}">
       <div class="t">${esc(e.title)}</div>
       <div class="log-meta">
         <span class="badge ${st}">${st}</span>
@@ -78,15 +95,20 @@ function renderLog() {
   let html = "";
   for (const f of FOLDERS) {
     const items = groups.get(f.id) || [];
-    html += `<div class="folder-head"><span>${esc(f.name)}</span>
-      <button class="link" data-delf="${f.id}">remove</button></div>`;
-    html += items.length ? items.map(item).join("")
-      : `<div class="log-item" style="cursor:default"><span class="tiny muted">empty</span></div>`;
+    html += `<div class="drop-zone" data-folder="${f.id}">
+      <div class="folder-head"><span>${esc(f.name)}</span>
+        <button class="link" data-delf="${f.id}">remove</button></div>
+      ${items.length ? items.map(item).join("")
+        : `<div style="padding:10px 16px" class="tiny muted">Drag an entry here.</div>`}
+    </div>`;
   }
   const loose = groups.get(null) || [];
-  if (loose.length) {
-    if (FOLDERS.length) html += `<div class="folder-head"><span>Unfiled</span></div>`;
-    html += loose.map(item).join("");
+  if (FOLDERS.length || loose.length) {
+    html += `<div class="drop-zone" data-folder="">
+      ${FOLDERS.length ? `<div class="folder-head"><span>Unfiled</span></div>` : ""}
+      ${loose.length ? loose.map(item).join("")
+        : `<div style="padding:10px 16px" class="tiny muted">Nothing unfiled.</div>`}
+    </div>`;
   }
   $("#log").innerHTML = html || `<div style="padding:16px" class="small muted">Nothing yet.</div>`;
 
@@ -97,6 +119,36 @@ function renderLog() {
     await api(`/folders/${el.dataset.delf}`, "DELETE");
     await refreshList();
   });
+
+  let dragId = null;
+  $("#log").querySelectorAll(".log-item[data-id]").forEach(el => {
+    el.ondragstart = (ev) => {
+      dragId = +el.dataset.id;
+      el.classList.add("dragging");
+      ev.dataTransfer.effectAllowed = "move";
+      ev.dataTransfer.setData("text/plain", String(dragId));
+    };
+    el.ondragend = () => {
+      dragId = null;
+      el.classList.remove("dragging");
+      $("#log").querySelectorAll(".drop-zone").forEach(z => z.classList.remove("over"));
+    };
+  });
+  $("#log").querySelectorAll(".drop-zone").forEach(zone => {
+    zone.ondragover = (ev) => { ev.preventDefault(); zone.classList.add("over"); };
+    zone.ondragleave = () => zone.classList.remove("over");
+    zone.ondrop = async (ev) => {
+      ev.preventDefault();
+      zone.classList.remove("over");
+      const id = dragId || +ev.dataTransfer.getData("text/plain");
+      if (!id) return;
+      const fid = zone.dataset.folder ? +zone.dataset.folder : null;
+      await api(`/experiments/${id}/folder`, "PUT", { folder_id: fid });
+      LOG = await api(`/projects/${PROJECT.id}/experiments`);
+      FOLDERS = await api(`/projects/${PROJECT.id}/folders`);
+      renderLog();
+    };
+  });
 }
 
 function renderStages() {
@@ -104,7 +156,8 @@ function renderStages() {
   $("#now-title").textContent = EXP ? EXP.title : "";
   $("#stages").innerHTML = STAGE_ORDER.map((s, i) => {
     const cls = i < at ? "done" : i === at ? "now" : "";
-    return `<div class="stage ${cls}"><span class="num">${pad2(i + 1)}</span>${s}</div>`;
+    return `<div class="stage ${cls}"><span class="num">${pad2(i + 1)}</span>${
+      STAGE_ICON[s]}${s}</div>`;
   }).join(`<span class="stage-arrow">&rarr;</span>`);
 }
 
@@ -158,7 +211,10 @@ function render() {
         : `<div class="small muted">The things that decide whether it worked and never reach
            the spreadsheet. Consistency of a gel, a line that looked unhappy, beads sitting low.</div>`}
       <div class="row" style="margin-top:10px">
-        <input id="note" placeholder="Add an observation…">
+        <input id="note" placeholder="Add an observation…" list="note-terms">
+        <datalist id="note-terms">
+          ${SUGG.terms.map(t => `<option value="${esc(t)}"></option>`).join("")}
+        </datalist>
         <button class="ghost sm" id="btn-note">Add</button>
       </div>
     </div>
@@ -820,12 +876,19 @@ function wire(c, ch) {
 
 function renderNewExperiment(parentId) {
   CTX = [["cell line", ""], ["passage", ""], ["differentiation day", ""]];
-  const rows = () => CTX.map((_, i) => `
-    <div class="ctx-row">
-      <input placeholder="variable" value="${esc(CTX[i][0])}" data-k="${i}">
-      <input placeholder="value" value="${esc(CTX[i][1])}" data-v="${i}">
+  const valueListId = (i) => `vals-${i}`;
+  const rows = () => CTX.map((_, i) => {
+    const vals = SUGG.context_values[CTX[i][0]] || [];
+    return `<div class="ctx-row">
+      <input placeholder="variable" value="${esc(CTX[i][0])}" data-k="${i}" list="ctx-keys">
+      <input placeholder="value" value="${esc(CTX[i][1])}" data-v="${i}"
+        list="${valueListId(i)}" ${vals.length ? `title="you have used: ${esc(vals.slice(0,4).join(", "))}"` : ""}>
+      <datalist id="${valueListId(i)}">
+        ${vals.map(v => `<option value="${esc(v)}"></option>`).join("")}
+      </datalist>
       <button class="ghost sm" data-x="${i}">&times;</button>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 
   $("#main").innerHTML = `<div class="card">
     <h2>${parentId ? "Next experiment" : "New experiment"}</h2>
@@ -842,7 +905,12 @@ function renderNewExperiment(parentId) {
     <label>Experimental context
       <span class="hint">Every variable here is one the challenge can reason about as a
       confounder, so record the boring ones: batch, lot, passage.</span></label>
+    <datalist id="ctx-keys">
+      ${SUGG.context_keys.map(k => `<option value="${esc(k)}"></option>`).join("")}
+    </datalist>
     <div id="ctx">${rows()}</div>
+    ${SUGG.context_keys.length ? `<div class="tiny muted" style="margin-top:4px">
+      Variables and values you have used before will complete as you type.</div>` : ""}
     <button class="ghost sm" id="ctx-add">+ variable</button>
     <div style="margin-top:16px"><button id="n-save">Create</button></div>
     <div class="err" id="n-err"></div>
@@ -850,7 +918,19 @@ function renderNewExperiment(parentId) {
 
   const bind = () => {
     $("#ctx").querySelectorAll("[data-k]").forEach(el =>
-      el.oninput = () => CTX[+el.dataset.k][0] = el.value);
+      el.oninput = () => {
+        const i = +el.dataset.k;
+        const was = CTX[i][0];
+        CTX[i][0] = el.value;
+        const vals = SUGG.context_values[el.value] || [];
+        if (was !== el.value && vals.length === 1 && !CTX[i][1]) {
+          CTX[i][1] = vals[0];
+          const vEl = $("#ctx").querySelector(`[data-v="${i}"]`);
+          if (vEl) vEl.value = vals[0];
+        }
+        const dl = document.getElementById(`vals-${i}`);
+        if (dl) dl.innerHTML = vals.map(v => `<option value="${esc(v)}"></option>`).join("");
+      });
     $("#ctx").querySelectorAll("[data-v]").forEach(el =>
       el.oninput = () => CTX[+el.dataset.v][1] = el.value);
     $("#ctx").querySelectorAll("[data-x]").forEach(el =>
