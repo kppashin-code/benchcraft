@@ -347,9 +347,38 @@
   .pill.mine { border-color: var(--navy); color: var(--navy); }
 
   dialog {
-    border: 1px solid var(--rule); border-radius: 10px; padding: 26px;
+    border: 1px solid var(--rule); border-radius: 16px; padding: 26px;
     max-width: 760px; width: 92%;
   }
+  dialog.wide { max-width: 1080px; }
+
+  .shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 12px; }
+  .vial {
+    border: 1px solid var(--rule); border-radius: 10px; background: var(--panel);
+    padding: 12px 13px 11px; cursor: pointer; position: relative; overflow: hidden;
+    display: flex; flex-direction: column; min-height: 122px;
+  }
+  .vial:hover { border-color: var(--ink-3); }
+  .vial .fill {
+    position: absolute; left: 0; right: 0; bottom: 0; background: #e9eef7; z-index: 0;
+  }
+  .vial.low .fill { background: #fbf0dd; }
+  .vial.out .fill { background: #f8e9e6; }
+  .vial > * { position: relative; z-index: 1; }
+  .vial .nm { font-weight: 600; font-size: 13.5px; line-height: 1.3; }
+  .vial .sub { font: 11px var(--ui); color: var(--ink-3); margin-top: 3px; }
+  .vial .amt { margin-top: auto; font: 600 12px var(--ui); padding-top: 8px; }
+  .vial .loc { font: 11px var(--ui); color: var(--ink-3); margin-top: 2px; }
+  .vial .flag {
+    position: absolute; top: 9px; right: 9px; font: 600 9px var(--ui); letter-spacing: .06em;
+    text-transform: uppercase; padding: 3px 7px; border-radius: 4px; z-index: 2;
+  }
+  .vial.low .flag { background: #f6efe2; color: #8a6a35; }
+  .vial.out .flag { background: #f7e7e4; color: #8d3b32; }
+  .kv { display: grid; grid-template-columns: 128px 1fr; gap: 4px 14px; font-size: 13.5px; }
+  .kv dt { font: 600 10.5px var(--ui); letter-spacing: .06em; text-transform: uppercase;
+           color: var(--ink-3); padding-top: 3px; }
+  .kv dd { margin: 0; }
   dialog::backdrop { background: rgba(2,28,69,.4); }
   .row { display: flex; gap: 8px; align-items: center; }
   .spin { display: inline-block; animation: sp 1s linear infinite; }
@@ -371,6 +400,7 @@
   </div>
   <div class="now-title" id="now-title"></div>
   <div class="stages" id="stages"></div>
+  <button class="ghost sm" id="btn-bench">Bench</button>
   <button class="ghost sm" id="btn-pen">Pen</button>
   <button class="ghost sm" id="btn-brief">Brief</button>
   <button class="ghost sm" id="btn-graph">Graph</button>

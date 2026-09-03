@@ -32,6 +32,7 @@ let GLOSS = [], MATCHES = [], CONNS = [], FOLDERS = [], LOG = [];
 let TSTATUS = { ready: false, missing: [] };
 let ZSTATUS = { ready: false }, ZCOLLS = [], ZITEMS = [], ZALL = {};
 let ZFILTER = { coll: "", engaged: true };
+let UPLOADED = [];
 let LIT = { query: "", results: [], used: "", dropped: [], preprints: false, reviews: false, ran: false };
 let SUGG = { context_keys: [], context_values: {}, terms: [] };
 let POLL = null;
@@ -96,6 +97,8 @@ async function api(path, method = "GET", body) {
   return r.json();
 }
 
+function inCycle(exp) { return exp && exp.mode === "cycle"; }
+
 function stageOf(exp) {
   if (!exp || !exp.commitments || !exp.commitments.length) return "notice";
   const c = exp.commitments[exp.commitments.length - 1];
@@ -138,7 +141,7 @@ function renderLog() {
   LOG.forEach(e => groups.get(groups.has(e.folder_id) ? e.folder_id : null).push(e));
 
   const item = (e) => {
-    const st = e.stage || "notice";
+    const st = e.mode === "cycle" ? (e.stage || "notice") : "entry";
     return `<div class="log-item ${EXP && e.id === EXP.id ? "on" : ""}"
       draggable="true" data-id="${e.id}">
       <div class="t">${esc(e.title)}</div>
@@ -218,8 +221,19 @@ function renderLog() {
 }
 
 function renderStages() {
-  const at = STAGE_ORDER.indexOf(stageOf(EXP));
   $("#now-title").textContent = EXP ? EXP.title : "";
+  if (!inCycle(EXP)) {
+    $("#stages").innerHTML = EXP
+      ? `<button class="ghost sm" id="btn-cycle">Put this through the cycle</button>`
+      : "";
+    const b = $("#btn-cycle");
+    if (b) b.onclick = async () => {
+      EXP = await api(`/experiments/${EXP.id}/mode`, "PUT", { mode: "cycle" });
+      render(); renderStages(); reloadLog();
+    };
+    return;
+  }
+  const at = STAGE_ORDER.indexOf(stageOf(EXP));
   $("#stages").innerHTML = STAGE_ORDER.map((s, i) => {
     const cls = i < at ? "done" : i === at ? "now" : "";
     return `<div class="stage ${cls}"><span class="num">${pad2(i + 1)}</span>${
@@ -258,7 +272,9 @@ function render() {
   const resp = ch && ch.responses[ch.responses.length - 1] || null;
   const ctx = Object.entries(EXP.context || {});
 
-  const banner = c
+  const cycle = inCycle(EXP);
+  const banner = !cycle ? ""
+    : c
     ? `<div class="banner">${LOCK_OPEN}Your view is committed. Challenge unlocked.</div>`
     : `<div class="banner wait">${LOCK_SHUT}Write your own reading first. The challenge stays locked until you do.</div>`;
 
@@ -295,14 +311,30 @@ function render() {
         <button class="ghost sm" id="btn-note">Add</button>
       </div>
     </div>
+    ${renderReagentsUsed()}
     ${renderInk()}
     ${renderLinkedPapers()}
     ${renderConnectorOutput()}
-    ${c ? renderCommitment(c) : renderCommitForm()}
-    ${c ? (ch ? renderChallenge(ch, c, resp) : renderChallengeGate()) : ""}
-    ${c ? renderResolution(c, resp) : ""}
+    ${cycle
+      ? `${c ? renderCommitment(c) : renderCommitForm()}
+         ${c ? (ch ? renderChallenge(ch, c, resp) : renderChallengeGate()) : ""}
+         ${c ? renderResolution(c, resp) : ""}`
+      : renderCycleOffer()}
   `;
   wire(c, ch);
+}
+
+function renderCycleOffer() {
+  return `<div class="card">
+    <h3>This is a plain notebook entry</h3>
+    <p class="small muted" style="margin-top:-4px">Record whatever you like here. Nothing is
+    gated and no model sees any of it.</p>
+    <p class="small" style="margin-top:10px">If you want this one argued with, put it through
+    the cycle. You will write what you expected, what you saw, what you think it means and how
+    confident you are. That gets locked, and only then does the challenge open. The order is the
+    point: an interpretation written after reading the model's is not independent of it.</p>
+    <div style="margin-top:14px"><button id="btn-cycle-inline">Put this through the cycle</button></div>
+  </div>`;
 }
 
 function renderCommitment(c) {
@@ -328,13 +360,32 @@ function renderCommitment(c) {
   </div>`;
 }
 
+function renderReagentsUsed() {
+  const rs = EXP.reagents || [];
+  if (!rs.length) return "";
+  return `<div class="card">
+    <h3>What went into this</h3>
+    <p class="tiny muted" style="margin-top:-6px">Recorded so that when something goes wrong six
+    weeks from now you can see exactly which lot you used.</p>
+    ${rs.map(u => `<div class="small" style="margin-bottom:6px">
+      <strong>${esc(u.name)}</strong>${u.lot ? `, lot ${esc(u.lot)}` : ""}${
+      u.concentration ? `, ${esc(u.concentration)}` : ""}${
+      u.amount ? `, used ${u.amount}${esc(u.unit || "")}` : ""}
+      ${u.note ? `<span class="muted">, ${esc(u.note)}</span>` : ""}
+      ${u.supplier ? `<div class="tiny muted">${esc(u.supplier)} ${esc(u.catalogue)}${
+        u.location ? `, ${esc(u.location)}` : ""}</div>` : ""}
+    </div>`).join("")}
+  </div>`;
+}
+
 function renderInk() {
   const notes = EXP.ink || [];
   if (!PEN.open && !notes.length) return "";
   return `
     ${PEN.open ? `<div class="card penpad">
       <h3>Written by hand</h3>
-      <p class="tiny muted" style="margin-top:-6px">For when you are gloved, or on an iPad.
+      <p class="tiny muted" style="margin-top:-6px">Save as many as you like, they stack up below.
+      For when you are gloved, or on an iPad.
       Pressure sensitive if you are using a stylus. Saved as strokes, so it stays sharp at any size.</p>
       <canvas id="pad"></canvas>
       <div class="pentools">
@@ -436,8 +487,12 @@ function wirePad() {
       EXP = await api(`/experiments/${EXP.id}/ink`, "POST",
         { strokes: PEN.strokes, width: Math.round(rect.width), height: Math.round(rect.height) });
       PEN.strokes = [];
-      PEN.open = false;
       render();
+      const err = $("#pen-err");
+      if (err) {
+        err.style.color = "var(--ok-ink)";
+        err.textContent = `Saved. The pad is clear, keep writing if you want another.`;
+      }
     } catch (e) { $("#pen-err").textContent = e.message; }
   };
 }
@@ -939,15 +994,76 @@ async function loadPapers() {
     ZCOLLS.length ? Promise.resolve(ZCOLLS) : api("/zotero/collections"),
     api(`/zotero/items?${q}`),
   ]);
+  UPLOADED = await api(`/projects/${PROJECT.id}/papers/uploaded`);
   renderRail();
+}
+
+function uploadBlock() {
+  return `
+    <h3 style="margin-top:20px">Your own PDFs</h3>
+    <p class="tiny muted" style="margin-top:-5px">No reference manager needed. Title, authors,
+    year and DOI are read out of the file where the PDF carries them.</p>
+    <div class="drop" id="pdf-drop">Drop a PDF here, or click to choose</div>
+    <input type="file" id="pdf-file" accept="application/pdf" style="display:none">
+    <div class="err tiny" id="pdf-err"></div>
+    <div style="margin-top:10px">
+      ${UPLOADED.map(it => `
+        <div class="paper">
+          <div class="row" style="align-items:flex-start">
+            <div class="pt" data-open="${esc(it.key)}" style="flex:1">${esc(it.title)}</div>
+            <button class="trash" data-delup="${it.key.split(":")[1]}">${TRASH}</button>
+          </div>
+          <div class="pm">${esc(it.authors.join(", "))}${it.date ? `, ${esc(it.date)}` : ""}</div>
+          <div style="margin-top:6px">
+            <span class="pill">pdf</span>
+            ${it.has_digest ? `<span class="pill on">digest</span>` : ""}
+            ${it.has_my_note ? `<span class="pill mine">my note</span>` : ""}
+          </div>
+        </div>`).join("") || `<div class="small muted">Nothing uploaded yet.</div>`}
+    </div>`;
+}
+
+function wireUpload() {
+  const drop = $("#pdf-drop"), file = $("#pdf-file");
+  if (!drop) return;
+  const send = async (f) => {
+    $("#pdf-err").textContent = "";
+    const fd = new FormData();
+    fd.append("file", f);
+    drop.textContent = "reading";
+    const r = await fetch(`/api/projects/${PROJECT.id}/papers/upload`, { method: "POST", body: fd });
+    drop.textContent = "Drop a PDF here, or click to choose";
+    if (!r.ok) { $("#pdf-err").textContent = (await r.json()).detail || "Upload failed"; return; }
+    UPLOADED = await api(`/projects/${PROJECT.id}/papers/uploaded`);
+    renderRail();
+  };
+  drop.onclick = () => file.click();
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = (e) => {
+    e.preventDefault(); drop.classList.remove("over");
+    if (e.dataTransfer.files[0]) send(e.dataTransfer.files[0]);
+  };
+  file.onchange = () => file.files[0] && send(file.files[0]);
+  $("#rail").querySelectorAll("[data-delup]").forEach(el => el.onclick = async () => {
+    UPLOADED = await api(`/uploaded_papers/${el.dataset.delup}`, "DELETE");
+    renderRail();
+  });
+  $("#rail").querySelectorAll("[data-open]").forEach(el =>
+    el.onclick = () => openPaper(el.dataset.open));
 }
 
 function renderPapersRail() {
   if (!ZSTATUS.ready) {
-    $("#rail").innerHTML = `<div class="ref-body"><h3>Papers</h3>
-      <div class="small" style="color:#8d3b32">${esc(ZSTATUS.detail || "Zotero not found.")}</div>
-      <div class="tiny muted" style="margin-top:8px">Benchcraft reads your local Zotero library
-      directly. Nothing is uploaded and no account is connected.</div></div>`;
+    $("#rail").innerHTML = `<div class="ref-body">
+      ${uploadBlock()}
+      <div style="margin-top:22px;padding-top:16px;border-top:1px solid var(--rule)">
+        <h3>Zotero</h3>
+        <div class="tiny muted">${esc(ZSTATUS.detail || "No Zotero library found.")}
+        If you use Zotero, Benchcraft reads it straight off disk. Nothing is uploaded and no
+        account is connected.</div>
+      </div></div>`;
+    wireUpload();
     return;
   }
   const linked = new Set((EXP && EXP.papers || []).map(p => p.zotero_key));
@@ -980,6 +1096,7 @@ function renderPapersRail() {
         </div>`).join("") : `<div class="small muted">Nothing matches.</div>`}
     </div>
     <div class="err tiny" id="z-err"></div>
+    ${uploadBlock()}
 
     <div style="margin-top:22px;padding-top:16px;border-top:1px solid var(--rule)">
       <h3>From the field</h3>
@@ -1020,6 +1137,7 @@ function renderPapersRail() {
       </div>
     </div></div>`;
 
+  wireUpload();
   $("#z-coll").onchange = (e) => { ZFILTER.coll = e.target.value; loadPapers(); };
   $("#z-eng").onchange = (e) => { ZFILTER.engaged = e.target.checked; loadPapers(); };
   $("#rail").querySelectorAll("[data-open]").forEach(el =>
@@ -1074,6 +1192,8 @@ function drawPaper(p) {
     <h2 style="font-size:19px">${esc(it.title)}</h2>
     <div class="small muted">${esc(it.authors.join(", "))}${it.more_authors ? " et al." : ""}
       ${it.date ? `, ${esc(it.date)}` : ""}${it.journal ? `, ${esc(it.journal)}` : ""}</div>
+    ${it.source === "upload" ? `<div class="tiny"><a href="/api/papers/${esc(it.key)}/pdf"
+      target="_blank" rel="noopener">open the pdf</a></div>` : ""}
     ${it.doi ? `<div class="tiny"><a href="https://doi.org/${esc(it.doi)}" target="_blank"
       rel="noopener">doi.org/${esc(it.doi)}</a></div>` : ""}
     ${it.tags.length ? `<div class="chips">${it.tags.map(t =>
@@ -1216,6 +1336,12 @@ function wire(c, ch) {
     render(); refreshRailData();
   });
 
+  const cyc = $("#btn-cycle-inline");
+  if (cyc) cyc.onclick = async () => {
+    EXP = await api(`/experiments/${EXP.id}/mode`, "PUT", { mode: "cycle" });
+    render(); renderStages(); reloadLog();
+  };
+
   const note = $("#btn-note");
   if (note) note.onclick = async () => {
     const body = $("#note").value.trim();
@@ -1308,6 +1434,10 @@ function renderNewExperiment(parentId) {
     <label>What question is this asking?
       <span class="hint">The question, not the technique.</span></label>
     <textarea id="n-question" rows="2"></textarea>
+    <label style="margin-top:16px">
+      <input type="checkbox" id="n-cycle" style="width:auto"> Put this through the cycle
+      <span class="hint">Leave off for a plain notebook entry. You can turn it on later.</span>
+    </label>
     ${FOLDERS.length ? `<label>Folder</label>
       <select id="n-folder"><option value="">Unfiled</option>
         ${FOLDERS.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join("")}
@@ -1357,6 +1487,7 @@ function renderNewExperiment(parentId) {
       context: Object.fromEntries(CTX.filter(([k, v]) => k.trim() && v.trim())),
       parent_experiment_id: parentId || null,
       folder_id: fsel && fsel.value ? +fsel.value : null,
+      mode: $("#n-cycle").checked ? "cycle" : "notebook",
     });
     EXP = created;
     await refreshList(created.id);
@@ -1452,5 +1583,220 @@ $("#btn-graph").onclick = async () => {
   });
   modal.showModal();
 };
+
+let REAGENTS = [];
+
+function pctLeft(r) {
+  if (!r.amount_total || r.amount_left == null) return null;
+  return Math.max(0, Math.min(100, Math.round(100 * r.amount_left / r.amount_total)));
+}
+
+async function openBench() {
+  REAGENTS = await api(`/projects/${PROJECT.id}/reagents`);
+  const restock = await api(`/projects/${PROJECT.id}/restock`);
+  modal.classList.add("wide");
+  $("#modal-body").innerHTML = `
+    <h2>The bench</h2>
+    <p class="small muted">What you have, what is in it, where you left it, and how much is
+    left. Low stock is arithmetic, not a guess.</p>
+
+    ${restock.length ? `<div class="card" style="background:#fdf8ef;border-color:#eadfc6">
+      <h3 style="color:#8a6a35">Tell the lab manager</h3>
+      ${restock.map(r => `<div class="small" style="margin-bottom:5px">
+        <strong>${esc(r.name)}</strong>
+        ${r.status === "out" ? "is out" : `is down to ${r.amount_left}${esc(r.unit)}`}
+        ${r.percent_left != null ? `<span class="muted">(${r.percent_left}%)</span>` : ""}
+        ${r.supplier ? `<span class="muted">, ${esc(r.supplier)} ${esc(r.catalogue)}</span>` : ""}
+      </div>`).join("")}
+      <button class="ghost sm" id="copy-restock" style="margin-top:8px">Copy as a list</button>
+      <span class="tiny muted" id="copied" style="margin-left:8px"></span>
+    </div>` : ""}
+
+    <div class="shelf">
+      ${REAGENTS.map(r => {
+        const p = pctLeft(r);
+        return `<div class="vial ${r.status}" data-reagent="${r.id}">
+          ${r.status !== "ok" ? `<div class="flag">${r.status === "out" ? "out" : "low"}</div>` : ""}
+          ${p != null ? `<div class="fill" style="height:${p}%"></div>` : ""}
+          <div class="nm">${esc(r.name)}</div>
+          <div class="sub">${esc(r.supplier || r.kind)}${r.lot ? `, lot ${esc(r.lot)}` : ""}</div>
+          <div class="amt">${r.amount_left != null
+            ? `${r.amount_left}${esc(r.unit)}${r.amount_total ? ` of ${r.amount_total}` : ""}`
+            : `<span class="muted">no amount tracked</span>`}</div>
+          ${r.location ? `<div class="loc">${esc(r.location)}</div>` : ""}
+        </div>`;
+      }).join("")}
+      <div class="vial" id="add-reagent" style="border-style:dashed;justify-content:center;
+        align-items:center;color:var(--ink-3)">+ Add something</div>
+    </div>`;
+  modal.showModal();
+
+  const copy = $("#copy-restock");
+  if (copy) copy.onclick = async () => {
+    const text = restock.map(r =>
+      `${r.name}${r.lot ? ` (lot ${r.lot})` : ""}: ${r.status === "out" ? "out" : `${r.amount_left}${r.unit} left`}`
+      + `${r.supplier ? ` — ${r.supplier} ${r.catalogue}` : ""}`).join("\n");
+    await navigator.clipboard.writeText(text.replace(/—/g, ","));
+    $("#copied").textContent = "copied";
+  };
+  $("#modal-body").querySelectorAll("[data-reagent]").forEach(el =>
+    el.onclick = () => openReagent(+el.dataset.reagent));
+  $("#add-reagent").onclick = () => reagentForm(null);
+}
+
+async function openReagent(id) {
+  const r = await api(`/reagents/${id}`);
+  const p = pctLeft(r);
+  modal.classList.add("wide");
+  $("#modal-body").innerHTML = `
+    <button class="link" id="back-bench">back to the bench</button>
+    <h2 style="margin-top:8px">${esc(r.name)}</h2>
+    <div class="small muted">${esc(r.kind)}${r.status !== "ok"
+      ? ` <span class="pill ${r.status === "out" ? "" : "on"}">${r.status}</span>` : ""}</div>
+
+    <dl class="kv" style="margin-top:16px">
+      ${r.supplier ? `<dt>Supplier</dt><dd>${esc(r.supplier)} ${esc(r.catalogue)}</dd>` : ""}
+      ${r.lot ? `<dt>Lot</dt><dd>${esc(r.lot)}</dd>` : ""}
+      ${r.concentration ? `<dt>Concentration</dt><dd>${esc(r.concentration)}</dd>` : ""}
+      ${r.amount_left != null ? `<dt>Left</dt><dd>${r.amount_left}${esc(r.unit)}${
+        r.amount_total ? ` of ${r.amount_total}${esc(r.unit)}` : ""}${
+        p != null ? ` <span class="muted">(${p}%)</span>` : ""}</dd>` : ""}
+      ${r.location ? `<dt>Where</dt><dd>${esc(r.location)}</dd>` : ""}
+      ${r.opened_at ? `<dt>Opened</dt><dd>${esc(r.opened_at)}</dd>` : ""}
+      ${r.expires_at ? `<dt>Expires</dt><dd>${esc(r.expires_at)}</dd>` : ""}
+    </dl>
+    ${r.notes ? `<p class="small" style="margin-top:14px">${esc(r.notes)}</p>` : ""}
+
+    ${r.components.length ? `<h3 style="margin-top:22px">What is in it</h3>
+      <dl class="kv">${r.components.map(c => `
+        <dt style="text-transform:none;font-weight:400;font-size:13px;color:var(--ink)">
+          ${esc(c.name)}</dt>
+        <dd>${esc(c.final_conc)}
+          ${c.source_name ? `<span class="muted">from ${esc(c.source_name)}${
+            c.source_lot ? `, lot ${esc(c.source_lot)}` : ""}</span>` : ""}
+          <button class="link" data-delcomp="${c.id}">remove</button></dd>`).join("")}</dl>`
+      : ""}
+    <div class="row" style="margin-top:10px">
+      <input id="comp-name" placeholder="component" style="flex:2">
+      <input id="comp-conc" placeholder="final conc." style="flex:1">
+      <select id="comp-src" style="flex:1.4">
+        <option value="">made from…</option>
+        ${REAGENTS.filter(x => x.id !== r.id).map(x =>
+          `<option value="${x.id}">${esc(x.name)}</option>`).join("")}
+      </select>
+      <button class="ghost sm" id="comp-add">Add</button>
+    </div>
+
+    ${r.used_in.length ? `<div class="small muted" style="margin-top:12px">
+      Goes into: ${r.used_in.map(u => esc(u.name)).join(", ")}.</div>` : ""}
+
+    <h3 style="margin-top:24px">Used in</h3>
+    ${r.uses.length ? r.uses.map(u => `<div class="small" style="margin-bottom:5px">
+      ${u.experiment_title ? `<strong>${esc(u.experiment_title)}</strong>` : "<em>no entry</em>"}
+      ${u.amount ? `, ${u.amount}${esc(r.unit)}` : ""}
+      ${u.note ? `, ${esc(u.note)}` : ""}
+      <span class="muted tiny">${u.created_at.slice(0, 10)}</span>
+      <button class="link" data-deluse="${u.id}">undo</button>
+    </div>`).join("") : `<div class="small muted">Not logged against anything yet.</div>`}
+
+    <div class="row" style="margin-top:12px">
+      <input id="use-amt" type="number" step="any" placeholder="amount" style="flex:1">
+      <input id="use-note" placeholder="what for" style="flex:2">
+      <button class="ghost sm" id="use-add">Log use${EXP ? " here" : ""}</button>
+    </div>
+    ${EXP ? `<div class="tiny muted" style="margin-top:5px">Logs against
+      <strong>${esc(EXP.title)}</strong> and subtracts from stock.</div>` : ""}
+
+    <div class="row" style="margin-top:22px">
+      <button class="ghost sm" id="edit-reagent">Edit details</button>
+      <button class="ghost sm" id="archive-reagent">Archive</button>
+    </div>
+    <div class="err" id="r-err"></div>`;
+
+  $("#back-bench").onclick = openBench;
+  $("#comp-add").onclick = async () => {
+    const name = $("#comp-name").value.trim();
+    if (!name) return;
+    await api(`/reagents/${id}/components`, "POST", {
+      name, final_conc: $("#comp-conc").value.trim(),
+      source_reagent_id: $("#comp-src").value ? +$("#comp-src").value : null,
+    });
+    openReagent(id);
+  };
+  $("#modal-body").querySelectorAll("[data-delcomp]").forEach(el => el.onclick = async () => {
+    await api(`/components/${el.dataset.delcomp}`, "DELETE"); openReagent(id);
+  });
+  $("#use-add").onclick = async () => {
+    const amt = $("#use-amt").value;
+    await api(`/reagents/${id}/use`, "POST", {
+      experiment_id: EXP ? EXP.id : null,
+      amount: amt ? +amt : null, note: $("#use-note").value.trim(),
+    });
+    if (EXP) EXP = await api(`/experiments/${EXP.id}`);
+    render();
+    openReagent(id);
+  };
+  $("#modal-body").querySelectorAll("[data-deluse]").forEach(el => el.onclick = async () => {
+    await api(`/uses/${el.dataset.deluse}`, "DELETE");
+    if (EXP) { EXP = await api(`/experiments/${EXP.id}`); render(); }
+    openReagent(id);
+  });
+  $("#edit-reagent").onclick = () => reagentForm(r);
+  $("#archive-reagent").onclick = async () => {
+    await api(`/reagents/${id}`, "DELETE"); openBench();
+  };
+}
+
+function reagentForm(r) {
+  const v = (k, d = "") => esc(r && r[k] != null ? r[k] : d);
+  $("#modal-body").innerHTML = `
+    <button class="link" id="back-bench2">back to the bench</button>
+    <h2 style="margin-top:8px">${r ? "Edit" : "Add"}</h2>
+    <label>Name</label><input id="f-name" value="${v("name")}">
+    <div class="ctx-row" style="grid-template-columns:1fr 1fr">
+      <div><label>Supplier</label><input id="f-supplier" value="${v("supplier")}"></div>
+      <div><label>Catalogue</label><input id="f-cat" value="${v("catalogue")}"></div>
+    </div>
+    <div class="ctx-row" style="grid-template-columns:1fr 1fr">
+      <div><label>Lot</label><input id="f-lot" value="${v("lot")}"></div>
+      <div><label>Concentration</label><input id="f-conc" value="${v("concentration")}"></div>
+    </div>
+    <div class="ctx-row" style="grid-template-columns:1fr 1fr 1fr 1fr">
+      <div><label>Total</label><input id="f-total" type="number" step="any" value="${v("amount_total")}"></div>
+      <div><label>Left</label><input id="f-left" type="number" step="any" value="${v("amount_left")}"></div>
+      <div><label>Unit</label><input id="f-unit" value="${v("unit")}"></div>
+      <div><label>Warn at</label><input id="f-low" type="number" step="any" value="${v("low_at")}"></div>
+    </div>
+    <label>Where you left it <span class="hint">Be specific. Shelf 3 of the minus 20, box B3.</span></label>
+    <input id="f-loc" value="${v("location")}">
+    <div class="ctx-row" style="grid-template-columns:1fr 1fr">
+      <div><label>Opened</label><input id="f-opened" type="date" value="${v("opened_at")}"></div>
+      <div><label>Expires</label><input id="f-exp" type="date" value="${v("expires_at")}"></div>
+    </div>
+    <label>Notes</label><textarea id="f-notes" rows="2">${v("notes")}</textarea>
+    <div style="margin-top:16px"><button id="f-save">Save</button></div>
+    <div class="err" id="f-err"></div>`;
+  $("#back-bench2").onclick = openBench;
+  $("#f-save").onclick = async () => {
+    const num = (id) => $(id).value === "" ? null : +$(id).value;
+    const body = {
+      name: $("#f-name").value.trim(), kind: (r && r.kind) || "reagent",
+      supplier: $("#f-supplier").value.trim(), catalogue: $("#f-cat").value.trim(),
+      lot: $("#f-lot").value.trim(), concentration: $("#f-conc").value.trim(),
+      unit: $("#f-unit").value.trim(), amount_total: num("#f-total"),
+      amount_left: num("#f-left"), low_at: num("#f-low"),
+      location: $("#f-loc").value.trim(), opened_at: $("#f-opened").value,
+      expires_at: $("#f-exp").value, notes: $("#f-notes").value.trim(),
+    };
+    if (!body.name) { $("#f-err").textContent = "A name, at least."; return; }
+    try {
+      if (r) await api(`/reagents/${r.id}`, "PUT", body);
+      else await api(`/projects/${PROJECT.id}/reagents`, "POST", body);
+      openBench();
+    } catch (e) { $("#f-err").textContent = e.message; }
+  };
+}
+
+$("#btn-bench").onclick = openBench;
 
 boot();

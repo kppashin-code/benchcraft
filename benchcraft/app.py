@@ -33,6 +33,7 @@ class ExperimentIn(BaseModel):
     context: dict[str, str] = Field(default_factory=dict)
     parent_experiment_id: int | None = None
     folder_id: int | None = None
+    mode: str = "notebook"
 
 
 class NoteIn(BaseModel):
@@ -77,6 +78,39 @@ class ConnectorIn(BaseModel):
     key_env: str = ""
     note: str = ""
     enabled: bool = False
+
+
+class ReagentIn(BaseModel):
+    name: str
+    kind: str = "reagent"
+    supplier: str = ""
+    catalogue: str = ""
+    lot: str = ""
+    concentration: str = ""
+    unit: str = ""
+    amount_total: float | None = None
+    amount_left: float | None = None
+    low_at: float | None = None
+    location: str = ""
+    opened_at: str = ""
+    expires_at: str = ""
+    notes: str = ""
+
+
+class ComponentIn(BaseModel):
+    name: str
+    final_conc: str = ""
+    source_reagent_id: int | None = None
+
+
+class UseIn(BaseModel):
+    experiment_id: int | None = None
+    amount: float | None = None
+    note: str = ""
+
+
+class ModeIn(BaseModel):
+    mode: str
 
 
 class SearchIn(BaseModel):
@@ -158,6 +192,8 @@ def list_experiments(project_id: int):
             e["stage"] = "commit"
         else:
             e["stage"] = "notice"
+        if e["mode"] != "cycle":
+            e["stage"] = "entry"
     return out
 
 
@@ -167,10 +203,12 @@ def create_experiment(project_id: int, body: ExperimentIn):
         raise HTTPException(404, "No such project")
     eid = db.insert(
         """INSERT INTO experiments
-           (project_id, parent_experiment_id, folder_id, title, question, context_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (project_id, body.parent_experiment_id, body.folder_id, body.title, body.question,
-         json.dumps(body.context), db.now()),
+           (project_id, parent_experiment_id, folder_id, title, mode, question,
+            context_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (project_id, body.parent_experiment_id, body.folder_id, body.title,
+         body.mode if body.mode in ('notebook', 'cycle') else 'notebook',
+         body.question, json.dumps(body.context), db.now()),
     )
     return db.experiment_bundle(eid)
 
@@ -181,6 +219,161 @@ def get_experiment(experiment_id: int):
     if not exp:
         raise HTTPException(404, "No such experiment")
     return exp
+
+
+@app.put("/api/experiments/{experiment_id}/mode")
+def set_mode(experiment_id: int, body: ModeIn):
+    if body.mode not in {"notebook", "cycle"}:
+        raise HTTPException(422, "mode must be notebook or cycle")
+    exp = db.experiment_bundle(experiment_id)
+    if not exp:
+        raise HTTPException(404, "No such experiment")
+    if body.mode == "notebook" and exp["commitments"]:
+        raise HTTPException(
+            409,
+            "This entry already has a locked commitment. Leaving the cycle would orphan it, "
+            "and a commitment cannot be recreated. Delete the entry if you really want it gone.",
+        )
+    db.execute("UPDATE experiments SET mode = ? WHERE id = ?", (body.mode, experiment_id))
+    return db.experiment_bundle(experiment_id)
+
+
+@app.get("/api/projects/{project_id}/reagents")
+def list_reagents(project_id: int, include_archived: bool = False):
+    sql = "SELECT * FROM reagents WHERE project_id = ?"
+    if not include_archived:
+        sql += " AND archived = 0"
+    sql += " ORDER BY name COLLATE NOCASE"
+    out = db.rows(sql, (project_id,))
+    for r in out:
+        r["status"] = db.reagent_status(r)
+        r["component_count"] = len(
+            db.rows("SELECT id FROM reagent_components WHERE reagent_id = ?", (r["id"],))
+        )
+        r["use_count"] = len(
+            db.rows("SELECT id FROM reagent_uses WHERE reagent_id = ?", (r["id"],))
+        )
+    return out
+
+
+@app.post("/api/projects/{project_id}/reagents")
+def create_reagent(project_id: int, body: ReagentIn):
+    if not body.name.strip():
+        raise HTTPException(422, "A name, at least.")
+    rid = db.insert(
+        """INSERT INTO reagents
+           (project_id, name, kind, supplier, catalogue, lot, concentration, unit,
+            amount_total, amount_left, low_at, location, opened_at, expires_at, notes, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (project_id, body.name.strip(), body.kind, body.supplier, body.catalogue, body.lot,
+         body.concentration, body.unit, body.amount_total,
+         body.amount_left if body.amount_left is not None else body.amount_total,
+         body.low_at, body.location, body.opened_at, body.expires_at, body.notes, db.now()),
+    )
+    return db.reagent_bundle(rid)
+
+
+@app.get("/api/reagents/{reagent_id}")
+def get_reagent(reagent_id: int):
+    r = db.reagent_bundle(reagent_id)
+    if not r:
+        raise HTTPException(404, "No such reagent")
+    return r
+
+
+@app.put("/api/reagents/{reagent_id}")
+def update_reagent(reagent_id: int, body: ReagentIn):
+    if not db.row("SELECT id FROM reagents WHERE id = ?", (reagent_id,)):
+        raise HTTPException(404, "No such reagent")
+    db.execute(
+        """UPDATE reagents SET name=?, kind=?, supplier=?, catalogue=?, lot=?, concentration=?,
+           unit=?, amount_total=?, amount_left=?, low_at=?, location=?, opened_at=?,
+           expires_at=?, notes=? WHERE id=?""",
+        (body.name.strip(), body.kind, body.supplier, body.catalogue, body.lot,
+         body.concentration, body.unit, body.amount_total, body.amount_left, body.low_at,
+         body.location, body.opened_at, body.expires_at, body.notes, reagent_id),
+    )
+    return db.reagent_bundle(reagent_id)
+
+
+@app.delete("/api/reagents/{reagent_id}")
+def archive_reagent(reagent_id: int):
+    r = db.row("SELECT * FROM reagents WHERE id = ?", (reagent_id,))
+    if not r:
+        raise HTTPException(404, "No such reagent")
+    db.execute("UPDATE reagents SET archived = 1 WHERE id = ?", (reagent_id,))
+    return list_reagents(r["project_id"])
+
+
+@app.post("/api/reagents/{reagent_id}/components")
+def add_component(reagent_id: int, body: ComponentIn):
+    if not db.row("SELECT id FROM reagents WHERE id = ?", (reagent_id,)):
+        raise HTTPException(404, "No such reagent")
+    n = len(db.rows("SELECT id FROM reagent_components WHERE reagent_id = ?", (reagent_id,)))
+    db.insert(
+        """INSERT INTO reagent_components (reagent_id, name, final_conc, source_reagent_id, position)
+           VALUES (?, ?, ?, ?, ?)""",
+        (reagent_id, body.name.strip(), body.final_conc, body.source_reagent_id, n),
+    )
+    return db.reagent_bundle(reagent_id)
+
+
+@app.delete("/api/components/{component_id}")
+def delete_component(component_id: int):
+    c = db.row("SELECT * FROM reagent_components WHERE id = ?", (component_id,))
+    if not c:
+        raise HTTPException(404, "No such component")
+    db.execute("DELETE FROM reagent_components WHERE id = ?", (component_id,))
+    return db.reagent_bundle(c["reagent_id"])
+
+
+@app.post("/api/reagents/{reagent_id}/use")
+def log_use(reagent_id: int, body: UseIn):
+    r = db.row("SELECT * FROM reagents WHERE id = ?", (reagent_id,))
+    if not r:
+        raise HTTPException(404, "No such reagent")
+    db.insert(
+        """INSERT INTO reagent_uses (reagent_id, experiment_id, amount, note, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (reagent_id, body.experiment_id, body.amount, body.note, db.now()),
+    )
+    if body.amount and r["amount_left"] is not None:
+        db.execute(
+            "UPDATE reagents SET amount_left = MAX(0, amount_left - ?) WHERE id = ?",
+            (body.amount, reagent_id),
+        )
+    return db.reagent_bundle(reagent_id)
+
+
+@app.delete("/api/uses/{use_id}")
+def delete_use(use_id: int):
+    u = db.row("SELECT * FROM reagent_uses WHERE id = ?", (use_id,))
+    if not u:
+        raise HTTPException(404, "No such entry")
+    if u["amount"]:
+        db.execute(
+            "UPDATE reagents SET amount_left = amount_left + ? WHERE id = ? AND amount_left IS NOT NULL",
+            (u["amount"], u["reagent_id"]),
+        )
+    db.execute("DELETE FROM reagent_uses WHERE id = ?", (use_id,))
+    return db.reagent_bundle(u["reagent_id"])
+
+
+@app.get("/api/projects/{project_id}/restock")
+def restock(project_id: int):
+    out = []
+    for r in list_reagents(project_id):
+        if r["status"] in {"low", "out"}:
+            pct = None
+            if r["amount_total"]:
+                pct = round(100 * (r["amount_left"] or 0) / r["amount_total"])
+            out.append({
+                "id": r["id"], "name": r["name"], "status": r["status"],
+                "supplier": r["supplier"], "catalogue": r["catalogue"], "lot": r["lot"],
+                "amount_left": r["amount_left"], "unit": r["unit"], "percent_left": pct,
+                "location": r["location"],
+            })
+    return out
 
 
 @app.get("/api/experiments/{experiment_id}/deletion_preview")
@@ -745,14 +938,120 @@ def zotero_items(collection: str | None = None, engaged_only: bool = False):
     return out
 
 
+def _split_authors(raw: str) -> list[str]:
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    for sep in (";", " and ", "&"):
+        if sep in raw:
+            return [a.strip() for a in raw.split(sep) if a.strip()][:3]
+    parts = [a.strip() for a in raw.split(",") if a.strip()]
+    if any(len(a.replace(".", "")) <= 2 for a in parts):
+        return [raw]
+    return parts[:3]
+
+
+def _uploaded(key: str) -> dict | None:
+    if not key.startswith("upload:"):
+        return None
+    r = db.row("SELECT * FROM uploaded_papers WHERE id = ?", (key.split(":", 1)[1],))
+    if not r:
+        return None
+    return {
+        "key": key, "type": "uploaded", "title": r["title"],
+        "abstract": "", "date": r["year"], "doi": r["doi"], "url": "",
+        "journal": r["journal"],
+        "authors": _split_authors(r["authors"]),
+        "more_authors": 0, "tags": [], "notes": [], "annotations": [],
+        "engaged": True, "has_pdf": Path(r["stored_path"]).exists(),
+        "filename": r["filename"], "source": "upload",
+    }
+
+
+@app.post("/api/projects/{project_id}/papers/upload")
+async def upload_paper(project_id: int, file: UploadFile = File(...)):
+    if not db.row("SELECT id FROM projects WHERE id = ?", (project_id,)):
+        raise HTTPException(404, "No such project")
+    if Path(file.filename or "").suffix.lower() != ".pdf":
+        raise HTTPException(422, "PDF only for now.")
+    db.PAPER_DIR.mkdir(exist_ok=True)
+    stored = db.PAPER_DIR / f"{uuid.uuid4().hex}.pdf"
+    with stored.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+
+    title = Path(file.filename).stem.replace("_", " ").strip()
+    authors = year = doi = journal = ""
+    try:
+        from pypdf import PdfReader
+
+        rd = PdfReader(str(stored))
+        meta = rd.metadata or {}
+        title = (meta.get("/Title") or "").strip() or title
+        authors = (meta.get("/Author") or "").strip()
+        first = (rd.pages[0].extract_text() or "")[:3000]
+        m = re.search(r"\b(10\.\d{4,9}/[^\s\"<>]+)", first)
+        if m:
+            doi = m.group(1).rstrip(".,;")
+        y = re.search(r"\b(19|20)\d{2}\b", first)
+        if y:
+            year = y.group(0)
+    except Exception:
+        pass
+
+    pid = db.insert(
+        """INSERT INTO uploaded_papers
+           (project_id, title, filename, stored_path, authors, year, doi, journal, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (project_id, title or file.filename, file.filename, str(stored),
+         authors, year, doi, journal, db.now()),
+    )
+    return get_paper(f"upload:{pid}")
+
+
+@app.get("/api/projects/{project_id}/papers/uploaded")
+def list_uploaded(project_id: int):
+    digests = {d["zotero_key"] for d in db.rows("SELECT zotero_key FROM paper_digests")}
+    noted = {n["zotero_key"] for n in db.rows("SELECT zotero_key FROM paper_notes WHERE body != ''")}
+    out = []
+    for r in db.rows(
+        "SELECT id FROM uploaded_papers WHERE project_id = ? ORDER BY created_at DESC",
+        (project_id,),
+    ):
+        it = _uploaded(f"upload:{r['id']}")
+        it["has_digest"] = it["key"] in digests
+        it["has_my_note"] = it["key"] in noted
+        out.append(it)
+    return out
+
+
+@app.delete("/api/uploaded_papers/{paper_id}")
+def delete_uploaded(paper_id: int):
+    r = db.row("SELECT * FROM uploaded_papers WHERE id = ?", (paper_id,))
+    if not r:
+        raise HTTPException(404, "No such paper")
+    Path(r["stored_path"]).unlink(missing_ok=True)
+    db.execute("DELETE FROM uploaded_papers WHERE id = ?", (paper_id,))
+    return list_uploaded(r["project_id"])
+
+
+@app.get("/api/papers/{key}/pdf")
+def paper_pdf(key: str):
+    r = db.row("SELECT * FROM uploaded_papers WHERE id = ?", (key.split(":", 1)[-1],))
+    if not r or not Path(r["stored_path"]).exists():
+        raise HTTPException(404, "No file")
+    return FileResponse(r["stored_path"], filename=r["filename"], media_type="application/pdf")
+
+
 @app.get("/api/papers/{key}")
 def get_paper(key: str):
-    try:
-        it = zotero.item(key)
-    except zotero.Unavailable as e:
-        raise HTTPException(503, str(e))
+    it = _uploaded(key)
+    if it is None:
+        try:
+            it = zotero.item(key)
+        except zotero.Unavailable as e:
+            raise HTTPException(503, str(e))
     if not it:
-        raise HTTPException(404, "Not in your Zotero library")
+        raise HTTPException(404, "Not found in your library or uploads")
     d = db.row("SELECT * FROM paper_digests WHERE zotero_key = ?", (key,))
     if d:
         for f in ("experiments", "methods", "limitations"):
@@ -763,13 +1062,28 @@ def get_paper(key: str):
 
 @app.post("/api/papers/{key}/digest")
 def make_digest(key: str):
-    try:
-        it = zotero.item(key)
-        if not it:
-            raise HTTPException(404, "Not in your Zotero library")
-        text, source = zotero.source_text(key)
-    except zotero.Unavailable as e:
-        raise HTTPException(503, str(e))
+    up = _uploaded(key)
+    if up:
+        it = up
+        r = db.row("SELECT * FROM uploaded_papers WHERE id = ?", (key.split(":", 1)[1],))
+        try:
+            from pypdf import PdfReader
+
+            raw = "\n".join((pg.extract_text() or "") for pg in PdfReader(r["stored_path"]).pages)
+            text = zotero._clean(raw).strip()[:60000]
+        except Exception as e:
+            raise HTTPException(503, f"Could not read that PDF: {e}")
+        if len(text) < 400:
+            raise HTTPException(503, "That PDF has no extractable text. It may be a scan.")
+        source = f"full text, {r['filename']}"
+    else:
+        try:
+            it = zotero.item(key)
+            if not it:
+                raise HTTPException(404, "Not in your Zotero library")
+            text, source = zotero.source_text(key)
+        except zotero.Unavailable as e:
+            raise HTTPException(503, str(e))
     try:
         d = llm.paper_digest(it["title"], text, source)
     except RuntimeError as e:

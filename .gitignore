@@ -4,3 +4,4 @@ __pycache__/
 .env
 benchcraft.db
 audio/
+papers/
