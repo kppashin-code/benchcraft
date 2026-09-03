@@ -183,6 +183,65 @@ def get_experiment(experiment_id: int):
     return exp
 
 
+@app.get("/api/experiments/{experiment_id}/deletion_preview")
+def deletion_preview(experiment_id: int):
+    exp = db.experiment_bundle(experiment_id)
+    if not exp:
+        raise HTTPException(404, "No such experiment")
+    commitments = exp["commitments"]
+    challenges = sum(len(c["challenges"]) for c in commitments)
+    resolutions = sum(1 for c in commitments if c.get("resolution"))
+    children = db.rows(
+        "SELECT id, title FROM experiments WHERE parent_experiment_id = ?", (experiment_id,)
+    )
+    return {
+        "title": exp["title"],
+        "notes": len(exp["notes"]),
+        "recordings": len(exp["recordings"]),
+        "ink": len(exp["ink"]),
+        "highlights": len(exp["highlights"]),
+        "papers": len(exp["papers"]),
+        "commitments": len(commitments),
+        "challenges": challenges,
+        "resolutions": resolutions,
+        "children": [c["title"] for c in children],
+    }
+
+
+@app.delete("/api/experiments/{experiment_id}")
+def delete_experiment(experiment_id: int):
+    exp = db.row("SELECT * FROM experiments WHERE id = ?", (experiment_id,))
+    if not exp:
+        raise HTTPException(404, "No such experiment")
+    for r in db.rows("SELECT stored_path FROM recordings WHERE experiment_id = ?", (experiment_id,)):
+        Path(r["stored_path"]).unlink(missing_ok=True)
+    db.execute(
+        "UPDATE experiments SET parent_experiment_id = NULL WHERE parent_experiment_id = ?",
+        (experiment_id,),
+    )
+    db.execute("DELETE FROM experiments WHERE id = ?", (experiment_id,))
+    return {"deleted": experiment_id, "project_id": exp["project_id"]}
+
+
+@app.delete("/api/notes/{note_id}")
+def delete_note(note_id: int):
+    n = db.row("SELECT * FROM notes WHERE id = ?", (note_id,))
+    if not n:
+        raise HTTPException(404, "No such note")
+    db.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+    return db.experiment_bundle(n["experiment_id"])
+
+
+@app.delete("/api/recordings/{recording_id}")
+def delete_recording(recording_id: int):
+    r = db.row("SELECT * FROM recordings WHERE id = ?", (recording_id,))
+    if not r:
+        raise HTTPException(404, "No such recording")
+    Path(r["stored_path"]).unlink(missing_ok=True)
+    db.execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
+    return db.experiment_bundle(r["experiment_id"])
+
+
 @app.post("/api/experiments/{experiment_id}/notes")
 def add_note(experiment_id: int, body: NoteIn):
     if not db.row("SELECT id FROM experiments WHERE id = ?", (experiment_id,)):

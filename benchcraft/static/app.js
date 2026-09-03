@@ -4,6 +4,8 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c =>
 const ul = (items, cls) =>
   `<ul class="ev ${cls}">${(items || []).map(i => `<li>${esc(i)}</li>`).join("")}</ul>`;
 const pad2 = (n) => String(n).padStart(2, "0");
+const TRASH = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+  stroke-linecap="round"><path d="M2.5 4h11M6 4V2.5h4V4M4 4l.6 9.5h6.8L12 4"/></svg>`;
 const rx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 function withHighlights(text) {
@@ -136,6 +138,7 @@ function renderLog() {
         <span class="date">${e.created_at.slice(0, 10)}</span>
         ${e.recording_count ? `<span class="date">${e.recording_count} voice</span>` : ""}
       </div>
+      <button class="trash" data-delexp="${e.id}" title="Delete this entry">${TRASH}</button>
     </div>`;
   };
 
@@ -160,7 +163,14 @@ function renderLog() {
   $("#log").innerHTML = html || `<div style="padding:16px" class="small muted">Nothing yet.</div>`;
 
   $("#log").querySelectorAll(".log-item[data-id]").forEach(el =>
-    el.onclick = () => openExperiment(+el.dataset.id));
+    el.onclick = (ev) => {
+      if (ev.target.closest(".trash")) return;
+      openExperiment(+el.dataset.id);
+    });
+  $("#log").querySelectorAll("[data-delexp]").forEach(el => el.onclick = async (ev) => {
+    ev.stopPropagation();
+    confirmDeleteExperiment(+el.dataset.delexp);
+  });
   $("#log").querySelectorAll("[data-delf]").forEach(el => el.onclick = async (ev) => {
     ev.stopPropagation();
     await api(`/folders/${el.dataset.delf}`, "DELETE");
@@ -259,10 +269,13 @@ function render() {
         </div>` : ""}
       <h3 style="margin-top:20px">Bench notes</h3>
       ${EXP.notes.filter(n => n.source !== "protocol").length
-        ? EXP.notes.filter(n => n.source !== "protocol").map(n => `<div class="small" style="margin-bottom:6px">
-            ${withHighlights(n.body)}
-            <span class="muted tiny">${n.source === "voice" ? "dictated, " : ""}${n.created_at.slice(0, 10)}</span>
-          </div>`).join("")
+        ? EXP.notes.filter(n => n.source !== "protocol").map(n => `
+            <div class="notes-row small">
+              <div>${withHighlights(n.body)}
+                <span class="muted tiny">${n.source === "voice" ? "dictated, " : ""}${n.created_at.slice(0, 10)}</span>
+              </div>
+              <button class="trash" data-delnote="${n.id}" title="Delete this note">${TRASH}</button>
+            </div>`).join("")
         : `<div class="small muted">The things that decide whether it worked and never reach
            the spreadsheet. Consistency of a gel, a line that looked unhappy, beads sitting low.</div>`}
       <div class="row" style="margin-top:10px">
@@ -565,6 +578,45 @@ function renderChallenge(ch, c, resp) {
     </div>`}`;
 }
 
+async function confirmDeleteExperiment(id) {
+  const p = await api(`/experiments/${id}/deletion_preview`);
+  const rows = [
+    [p.commitments, "locked commitment", "locked commitments"],
+    [p.challenges, "challenge", "challenges"],
+    [p.resolutions, "recorded outcome", "recorded outcomes"],
+    [p.notes, "bench note", "bench notes"],
+    [p.recordings, "voice memo", "voice memos"],
+    [p.ink, "handwritten note", "handwritten notes"],
+    [p.highlights, "highlight", "highlights"],
+    [p.papers, "attached paper", "attached papers"],
+  ].filter(r => r[0] > 0);
+
+  $("#modal-body").innerHTML = `
+    <h2 style="font-size:20px">Delete "${esc(p.title)}"?</h2>
+    ${rows.length ? `<p class="small muted">This also deletes, permanently:</p>
+      <ul class="ev con">${rows.map(r =>
+        `<li>${r[0]} ${r[0] === 1 ? r[1] : r[2]}</li>`).join("")}</ul>`
+      : `<p class="small muted">This entry has nothing recorded against it yet.</p>`}
+    ${p.commitments ? `<p class="small" style="margin-top:12px;color:#8d3b32">
+      A locked commitment cannot be recreated. It was your view at a moment that has passed,
+      and deleting it removes that call from your calibration for good.</p>` : ""}
+    ${p.children.length ? `<p class="small muted" style="margin-top:12px">
+      ${p.children.length} later experiment${p.children.length > 1 ? "s" : ""} branched from this
+      one and will be kept, but will lose the link back:
+      ${p.children.map(t => esc(t)).join(", ")}.</p>` : ""}
+    <div class="row" style="margin-top:18px">
+      <button class="ghost" onclick="modal.close()">Keep it</button>
+      <button id="do-delete" style="background:#8d3b32;border-color:#8d3b32">Delete permanently</button>
+    </div>`;
+  modal.showModal();
+  $("#do-delete").onclick = async () => {
+    await api(`/experiments/${id}`, "DELETE");
+    modal.close();
+    if (EXP && EXP.id === id) EXP = null;
+    await refreshList();
+  };
+}
+
 function renderResolution(c, resp) {
   const r = c.resolution;
   const settled = r && r.verdict !== "unresolved";
@@ -768,7 +820,10 @@ function renderVoiceRail() {
     <div style="margin-top:13px">
       ${recs.length ? recs.map(r => `
         <div class="rec">
-          <div class="small" style="font-weight:500">${esc(r.filename)}</div>
+          <div class="row" style="align-items:flex-start">
+            <div class="small" style="font-weight:500;flex:1">${esc(r.filename)}</div>
+            <button class="trash" data-delrec="${r.id}" title="Delete this recording">${TRASH}</button>
+          </div>
           <div class="tiny muted">${r.duration_s ? `${r.duration_s}s, ` : ""}${r.created_at.slice(0, 10)}</div>
           <audio controls preload="none" src="/api/recordings/${r.id}/audio"></audio>
           ${r.transcript
@@ -803,6 +858,10 @@ function renderVoiceRail() {
   };
   file.onchange = () => file.files[0] && upload(file.files[0]);
 
+  $("#rail").querySelectorAll("[data-delrec]").forEach(el => el.onclick = async () => {
+    EXP = await api(`/recordings/${el.dataset.delrec}`, "DELETE");
+    render(); renderRail(); reloadLog();
+  });
   $("#rail").querySelectorAll("[data-tr]").forEach(el => el.onclick = async () => {
     el.disabled = true;
     try {
@@ -1142,6 +1201,11 @@ function wire(c, ch) {
   if (conf) conf.oninput = () => $("#conflabel").textContent = conf.value;
   const rconf = $("#r-confidence");
   if (rconf) rconf.oninput = () => $("#r-conflabel").textContent = rconf.value;
+
+  $("#main").querySelectorAll("[data-delnote]").forEach(el => el.onclick = async () => {
+    EXP = await api(`/notes/${el.dataset.delnote}`, "DELETE");
+    render(); refreshRailData();
+  });
 
   const note = $("#btn-note");
   if (note) note.onclick = async () => {
