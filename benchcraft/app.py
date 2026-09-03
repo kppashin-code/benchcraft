@@ -79,6 +79,12 @@ class ConnectorIn(BaseModel):
     enabled: bool = False
 
 
+class InkIn(BaseModel):
+    strokes: list[dict]
+    width: int = Field(gt=0, le=4000)
+    height: int = Field(gt=0, le=4000)
+
+
 class HighlightIn(BaseModel):
     body: str
 
@@ -181,6 +187,29 @@ def add_note(experiment_id: int, body: NoteIn):
         (experiment_id, body.body, body.source, body.recording_id, db.now()),
     )
     return db.experiment_bundle(experiment_id)
+
+
+@app.post("/api/experiments/{experiment_id}/ink")
+def add_ink(experiment_id: int, body: InkIn):
+    if not db.row("SELECT id FROM experiments WHERE id = ?", (experiment_id,)):
+        raise HTTPException(404, "No such experiment")
+    if not body.strokes:
+        raise HTTPException(422, "Nothing written.")
+    db.insert(
+        """INSERT INTO ink_notes (experiment_id, strokes, width, height, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (experiment_id, json.dumps(body.strokes), body.width, body.height, db.now()),
+    )
+    return db.experiment_bundle(experiment_id)
+
+
+@app.delete("/api/ink/{ink_id}")
+def delete_ink(ink_id: int):
+    r = db.row("SELECT * FROM ink_notes WHERE id = ?", (ink_id,))
+    if not r:
+        raise HTTPException(404, "No such ink note")
+    db.execute("DELETE FROM ink_notes WHERE id = ?", (ink_id,))
+    return db.experiment_bundle(r["experiment_id"])
 
 
 @app.post("/api/experiments/{experiment_id}/highlights")

@@ -289,6 +289,25 @@
     padding: 16px 18px; border-radius: 0 var(--r) var(--r) 0; margin-bottom: 16px;
   }
 
+  .penpad { margin-bottom: 18px; }
+  .penpad canvas {
+    width: 100%; height: 340px; display: block; background: #fffef9;
+    border: 1px solid var(--rule-2); border-radius: var(--r); touch-action: none;
+    cursor: crosshair;
+  }
+  .pentools { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .swatch {
+    width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent;
+    cursor: pointer; padding: 0;
+  }
+  .swatch.on { border-color: var(--ink-3); }
+  .inknote {
+    border: 1px solid var(--rule); border-radius: var(--r); background: #fffef9;
+    padding: 6px; margin-bottom: 8px; position: relative;
+  }
+  .inknote svg { width: 100%; height: auto; display: block; }
+  .inknote .rm { position: absolute; top: 6px; right: 8px; }
+
   .paper { border-top: 1px solid var(--rule); padding: 11px 0; }
   .paper:first-of-type { border-top: 0; }
   .paper .pt { font-weight: 600; font-size: 13px; line-height: 1.35; cursor: pointer; }
@@ -328,6 +347,7 @@
   </div>
   <div class="now-title" id="now-title"></div>
   <div class="stages" id="stages"></div>
+  <button class="ghost sm" id="btn-pen">Pen</button>
   <button class="ghost sm" id="btn-brief">Brief</button>
   <button class="ghost sm" id="btn-graph">Graph</button>
 </header>

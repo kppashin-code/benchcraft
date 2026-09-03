@@ -57,6 +57,15 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ink_notes (
+    id            INTEGER PRIMARY KEY,
+    experiment_id INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+    strokes       TEXT NOT NULL,
+    width         INTEGER NOT NULL,
+    height        INTEGER NOT NULL,
+    created_at    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS highlights (
     id            INTEGER PRIMARY KEY,
     experiment_id INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
@@ -238,6 +247,9 @@ def experiment_bundle(experiment_id: int) -> dict | None:
     )
     exp["recordings"] = rows(
         "SELECT * FROM recordings WHERE experiment_id = ? ORDER BY created_at", (experiment_id,)
+    )
+    exp["ink"] = rows(
+        "SELECT * FROM ink_notes WHERE experiment_id = ? ORDER BY created_at", (experiment_id,)
     )
     exp["highlights"] = rows(
         "SELECT * FROM highlights WHERE experiment_id = ? ORDER BY created_at", (experiment_id,)

@@ -23,6 +23,40 @@ let ZSTATUS = { ready: false }, ZCOLLS = [], ZITEMS = [], ZALL = {};
 let ZFILTER = { coll: "", engaged: true };
 let SUGG = { context_keys: [], context_values: {}, terms: [] };
 let POLL = null;
+let PEN = { open: false, colour: "#021C45", size: 2.2, erase: false, strokes: [] };
+const INK_COLOURS = ["#021C45", "#1a56b8", "#8d3b32", "#2f6b3f"];
+
+function strokeToPath(st) {
+  const pts = st.points;
+  if (!pts.length) return "";
+  if (pts.length === 1) {
+    const [x, y] = pts[0];
+    return `M${x} ${y} L${x + 0.1} ${y}`;
+  }
+  let d = `M${pts[0][0]} ${pts[0][1]}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const mx = (pts[i][0] + pts[i + 1][0]) / 2;
+    const my = (pts[i][1] + pts[i + 1][1]) / 2;
+    d += ` Q${pts[i][0]} ${pts[i][1]} ${mx} ${my}`;
+  }
+  const last = pts[pts.length - 1];
+  d += ` L${last[0]} ${last[1]}`;
+  return d;
+}
+
+function meanPressure(st) {
+  const ps = st.points.map(p => p[2]).filter(v => v > 0);
+  return ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : 0.5;
+}
+
+function inkSvg(rec) {
+  const strokes = typeof rec.strokes === "string" ? JSON.parse(rec.strokes) : rec.strokes;
+  return `<svg viewBox="0 0 ${rec.width} ${rec.height}" xmlns="http://www.w3.org/2000/svg">
+    ${strokes.map(st => `<path d="${strokeToPath(st)}" fill="none" stroke="${esc(st.colour)}"
+      stroke-width="${(st.size * (0.4 + meanPressure(st) * 1.2)).toFixed(2)}"
+      stroke-linecap="round" stroke-linejoin="round"/>`).join("")}
+  </svg>`;
+}
 
 const STAGE_ORDER = ["notice", "commit", "challenge", "decide"];
 
@@ -216,9 +250,15 @@ function render() {
       ${ctx.length ? `<div class="ctx">${ctx.map(([k, v]) =>
         `<b>${esc(k)}:</b> ${esc(v)}`).join("&nbsp;&nbsp; ")}</div>` : ""}
 
+      ${EXP.notes.some(n => n.source === "protocol") ? `
+        <h3 style="margin-top:20px">Protocol</h3>
+        <div class="ctx" style="margin-top:0">
+          ${EXP.notes.filter(n => n.source === "protocol").map(n =>
+            `<div>${withHighlights(n.body)}</div>`).join("")}
+        </div>` : ""}
       <h3 style="margin-top:20px">Bench notes</h3>
-      ${EXP.notes.length
-        ? EXP.notes.map(n => `<div class="small" style="margin-bottom:6px">
+      ${EXP.notes.filter(n => n.source !== "protocol").length
+        ? EXP.notes.filter(n => n.source !== "protocol").map(n => `<div class="small" style="margin-bottom:6px">
             ${withHighlights(n.body)}
             <span class="muted tiny">${n.source === "voice" ? "dictated, " : ""}${n.created_at.slice(0, 10)}</span>
           </div>`).join("")
@@ -232,6 +272,7 @@ function render() {
         <button class="ghost sm" id="btn-note">Add</button>
       </div>
     </div>
+    ${renderInk()}
     ${renderLinkedPapers()}
     ${renderConnectorOutput()}
     ${c ? renderCommitment(c) : renderCommitForm()}
@@ -261,6 +302,120 @@ function renderCommitment(c) {
       Locked ${c.locked_at.replace("T", " ").slice(0, 16)}. Your words, unedited.
     </div>
   </div>`;
+}
+
+function renderInk() {
+  const notes = EXP.ink || [];
+  if (!PEN.open && !notes.length) return "";
+  return `
+    ${PEN.open ? `<div class="card penpad">
+      <h3>Written by hand</h3>
+      <p class="tiny muted" style="margin-top:-6px">For when you are gloved, or on an iPad.
+      Pressure sensitive if you are using a stylus. Saved as strokes, so it stays sharp at any size.</p>
+      <canvas id="pad"></canvas>
+      <div class="pentools">
+        ${INK_COLOURS.map(c => `<button class="swatch ${PEN.colour === c && !PEN.erase ? "on" : ""}"
+          data-colour="${c}" style="background:${c}"></button>`).join("")}
+        <button class="ghost sm ${PEN.erase ? "on" : ""}" id="pen-erase">${
+          PEN.erase ? "Erasing" : "Erase"}</button>
+        <button class="ghost sm" id="pen-undo">Undo</button>
+        <button class="ghost sm" id="pen-clear">Clear</button>
+        <span style="flex:1"></span>
+        <button id="pen-save">Save note</button>
+      </div>
+      <div class="err tiny" id="pen-err"></div>
+    </div>` : ""}
+    ${notes.length ? `<div class="card">
+      <h3>Handwritten notes</h3>
+      ${notes.map(n => `<div class="inknote">
+        <button class="link rm" data-rmink="${n.id}">remove</button>
+        ${inkSvg(n)}
+        <div class="tiny muted" style="padding:2px 4px 0">${n.created_at.slice(0, 10)}</div>
+      </div>`).join("")}
+    </div>` : ""}`;
+}
+
+function wirePad() {
+  const cv = $("#pad");
+  if (!cv) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = cv.getBoundingClientRect();
+  cv.width = Math.round(rect.width * dpr);
+  cv.height = Math.round(rect.height * dpr);
+  const ctx = cv.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  const redraw = () => {
+    ctx.clearRect(0, 0, rect.width, rect.height);
+    for (const st of PEN.strokes) {
+      ctx.strokeStyle = st.colour;
+      ctx.lineWidth = st.size * (0.4 + meanPressure(st) * 1.2);
+      ctx.beginPath();
+      const pts = st.points;
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.stroke();
+    }
+  };
+  redraw();
+
+  let drawing = false, cur = null;
+  const pos = (e) => {
+    const r = cv.getBoundingClientRect();
+    return [+(e.clientX - r.left).toFixed(1), +(e.clientY - r.top).toFixed(1),
+            +(e.pressure > 0 ? e.pressure : 0.5).toFixed(2)];
+  };
+
+  cv.onpointerdown = (e) => {
+    cv.setPointerCapture(e.pointerId);
+    const p = pos(e);
+    if (PEN.erase) {
+      const before = PEN.strokes.length;
+      PEN.strokes = PEN.strokes.filter(st =>
+        !st.points.some(q => Math.hypot(q[0] - p[0], q[1] - p[1]) < 14));
+      if (PEN.strokes.length !== before) redraw();
+      return;
+    }
+    drawing = true;
+    cur = { colour: PEN.colour, size: PEN.size, points: [p] };
+    PEN.strokes.push(cur);
+  };
+  cv.onpointermove = (e) => {
+    if (!drawing || !cur) return;
+    const p = pos(e);
+    const last = cur.points[cur.points.length - 1];
+    if (Math.hypot(p[0] - last[0], p[1] - last[1]) < 1.2) return;
+    cur.points.push(p);
+    ctx.strokeStyle = cur.colour;
+    ctx.lineWidth = cur.size * (0.4 + p[2] * 1.2);
+    ctx.beginPath();
+    ctx.moveTo(last[0], last[1]);
+    ctx.lineTo(p[0], p[1]);
+    ctx.stroke();
+  };
+  const stop = () => { drawing = false; cur = null; };
+  cv.onpointerup = stop;
+  cv.onpointercancel = stop;
+  cv.onpointerleave = stop;
+
+  $("#main").querySelectorAll("[data-colour]").forEach(b => b.onclick = () => {
+    PEN.colour = b.dataset.colour; PEN.erase = false; render();
+  });
+  $("#pen-erase").onclick = () => { PEN.erase = !PEN.erase; render(); };
+  $("#pen-undo").onclick = () => { PEN.strokes.pop(); render(); };
+  $("#pen-clear").onclick = () => { PEN.strokes = []; render(); };
+  $("#pen-save").onclick = async () => {
+    if (!PEN.strokes.length) { $("#pen-err").textContent = "Nothing written yet."; return; }
+    try {
+      EXP = await api(`/experiments/${EXP.id}/ink`, "POST",
+        { strokes: PEN.strokes, width: Math.round(rect.width), height: Math.round(rect.height) });
+      PEN.strokes = [];
+      PEN.open = false;
+      render();
+    } catch (e) { $("#pen-err").textContent = e.message; }
+  };
 }
 
 function renderLinkedPapers() {
@@ -869,6 +1024,11 @@ function renderConnRail() {
 }
 
 function wire(c, ch) {
+  wirePad();
+  $("#main").querySelectorAll("[data-rmink]").forEach(el => el.onclick = async () => {
+    EXP = await api(`/ink/${el.dataset.rmink}`, "DELETE");
+    render();
+  });
   $("#main").querySelectorAll("[data-openc]").forEach(el =>
     el.onclick = () => openPaper(el.dataset.openc));
 
@@ -1020,6 +1180,14 @@ document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
 });
 
 $("#btn-new").onclick = () => renderNewExperiment();
+
+$("#btn-pen").onclick = () => {
+  if (!EXP) return;
+  PEN.open = !PEN.open;
+  $("#btn-pen").classList.toggle("ai", PEN.open);
+  render();
+  if (PEN.open) $("#pad").scrollIntoView({ behavior: "smooth", block: "center" });
+};
 
 $("#btn-folder").onclick = async () => {
   const name = prompt("Folder name, for example a protocol you run repeatedly:");

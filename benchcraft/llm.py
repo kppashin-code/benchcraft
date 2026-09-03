@@ -328,8 +328,14 @@ def _record_text(exp: dict, commitment: dict, include_interpretation: bool,
         f"WHAT THE RESEARCHER EXPECTED:\n{commitment['expected']}",
         f"WHAT WAS OBSERVED:\n{commitment['observed']}",
     ]
+    steps = [n["body"] for n in exp.get("notes", []) if n.get("source") == "protocol"]
+    if steps:
+        parts.append(
+            "THE PROTOCOL BEING FOLLOWED, as the researcher recorded it:\n"
+            + "\n".join(f"  {t}" for t in steps)
+        )
     spoken = [r["transcript"] for r in exp.get("recordings", []) if r.get("transcript")]
-    written = [n["body"] for n in exp.get("notes", [])]
+    written = [n["body"] for n in exp.get("notes", []) if n.get("source") != "protocol"]
     if written or spoken:
         lines = "\n".join(f"  - {t}" for t in written + spoken)
         parts.append(
