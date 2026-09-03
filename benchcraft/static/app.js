@@ -1635,8 +1635,8 @@ async function openBench() {
   if (copy) copy.onclick = async () => {
     const text = restock.map(r =>
       `${r.name}${r.lot ? ` (lot ${r.lot})` : ""}: ${r.status === "out" ? "out" : `${r.amount_left}${r.unit} left`}`
-      + `${r.supplier ? ` — ${r.supplier} ${r.catalogue}` : ""}`).join("\n");
-    await navigator.clipboard.writeText(text.replace(/—/g, ","));
+      + `${r.supplier ? `, ${r.supplier} ${r.catalogue}` : ""}`).join("\n");
+    await navigator.clipboard.writeText(text);
     $("#copied").textContent = "copied";
   };
   $("#modal-body").querySelectorAll("[data-reagent]").forEach(el =>
@@ -1680,7 +1680,7 @@ async function openReagent(id) {
       <input id="comp-name" placeholder="component" style="flex:2">
       <input id="comp-conc" placeholder="final conc." style="flex:1">
       <select id="comp-src" style="flex:1.4">
-        <option value="">made from…</option>
+        <option value="">made from</option>
         ${REAGENTS.filter(x => x.id !== r.id).map(x =>
           `<option value="${x.id}">${esc(x.name)}</option>`).join("")}
       </select>
