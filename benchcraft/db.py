@@ -57,6 +57,13 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS highlights (
+    id            INTEGER PRIMARY KEY,
+    experiment_id INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+    body          TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS commitments (
     id             INTEGER PRIMARY KEY,
     experiment_id  INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
@@ -232,6 +239,9 @@ def experiment_bundle(experiment_id: int) -> dict | None:
     exp["recordings"] = rows(
         "SELECT * FROM recordings WHERE experiment_id = ? ORDER BY created_at", (experiment_id,)
     )
+    exp["highlights"] = rows(
+        "SELECT * FROM highlights WHERE experiment_id = ? ORDER BY created_at", (experiment_id,)
+    )
     exp["papers"] = rows(
         "SELECT * FROM experiment_papers WHERE experiment_id = ? ORDER BY created_at",
         (experiment_id,),
@@ -274,3 +284,43 @@ def experiment_text(exp: dict) -> str:
     for c in exp.get("commitments", []):
         parts += [c["expected"], c["observed"], c["interpretation"], c["disconfirming"]]
     return "\n".join(p for p in parts if p)
+
+
+def folder_history(experiment_id: int) -> list[dict]:
+    exp = row("SELECT folder_id, project_id, created_at FROM experiments WHERE id = ?",
+              (experiment_id,))
+    if not exp or not exp["folder_id"]:
+        return []
+    prior = rows(
+        """SELECT id FROM experiments
+           WHERE folder_id = ? AND id != ? AND created_at <= ?
+           ORDER BY created_at""",
+        (exp["folder_id"], experiment_id, exp["created_at"]),
+    )
+    out = []
+    for e in prior:
+        b = experiment_bundle(e["id"])
+        if not b:
+            continue
+        last = b["commitments"][-1] if b["commitments"] else None
+        out.append({
+            "title": b["title"],
+            "created_at": b["created_at"],
+            "context": b["context"],
+            "notes": [n["body"] for n in b["notes"]],
+            "observed": last["observed"] if last else "",
+            "interpretation": last["interpretation"] if last else "",
+            "confidence": last["confidence"] if last else None,
+            "verdict": (last or {}).get("resolution", {}) and last["resolution"]["verdict"]
+                       if last and last.get("resolution") else "",
+        })
+    return out
+
+
+def folder_name(experiment_id: int) -> str:
+    r = row(
+        """SELECT f.name FROM experiments e JOIN folders f ON f.id = e.folder_id
+           WHERE e.id = ?""",
+        (experiment_id,),
+    )
+    return r["name"] if r else ""

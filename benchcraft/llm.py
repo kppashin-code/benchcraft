@@ -87,6 +87,14 @@ class BlindChallenge(BaseModel):
         description="What you needed to know and were not told. This is feedback on the "
         "researcher's record-keeping, not on their science."
     )
+    recurs_in_this_protocol: list[str] = Field(
+        description="Only if you were given PRIOR RUNS OF THIS PROTOCOL. Each item names a "
+        "specific earlier run by title and says what it shares with this one: the same "
+        "direction of effect, the same batch, the same thing going wrong at the same step. "
+        "Say plainly if a pattern has now appeared more than twice. Empty list if you were "
+        "given no prior runs, or if there is genuinely no recurrence. Never invent a "
+        "resemblance to fill this in."
+    )
 
 
 class Divergence(BaseModel):
@@ -180,6 +188,12 @@ given, not to generic risks.
 
 5. Propose one cheap discriminating experiment, and say which result points \
 which way.
+
+6. If you are given PRIOR RUNS OF THIS PROTOCOL, read them. A researcher \
+running the same protocol for the eighth time cannot easily see across their own \
+runs; you can. Say which earlier runs show the same pattern, by name. A thing \
+that has now happened three times is not noise, and saying so is the single most \
+useful thing you can do with that history. Do not invent a resemblance.
 
 Write for a working bench scientist. Concrete, specific to the stated system, \
 no encouragement, no hedging boilerplate, no restating the question back."""
@@ -278,7 +292,34 @@ Use these headings exactly:
 No preamble, no sign-off. Start at the first heading."""
 
 
-def _record_text(exp: dict, commitment: dict, include_interpretation: bool) -> str:
+def _history_text(history: list[dict], folder: str) -> str:
+    if not history:
+        return ""
+    blocks = []
+    for h in history:
+        ctx = ", ".join(f"{k} {v}" for k, v in (h.get("context") or {}).items())
+        b = [f"  RUN: {h['title']} ({h['created_at'][:10]})"]
+        if ctx:
+            b.append(f"    conditions: {ctx}")
+        if h["observed"]:
+            b.append(f"    observed: {h['observed']}")
+        if h["interpretation"]:
+            conf = f" (they were {h['confidence']}/100 confident)" if h["confidence"] else ""
+            b.append(f"    they concluded: {h['interpretation']}{conf}")
+        if h["verdict"]:
+            b.append(f"    how it turned out: {h['verdict']}")
+        for n in h["notes"][:4]:
+            b.append(f"    bench note: {n}")
+        blocks.append("\n".join(b))
+    return (
+        f"PRIOR RUNS OF THIS PROTOCOL ({folder}), oldest first. These are earlier "
+        "experiments by the same researcher in the same protocol folder:\n\n"
+        + "\n\n".join(blocks)
+    )
+
+
+def _record_text(exp: dict, commitment: dict, include_interpretation: bool,
+                 history: list[dict] | None = None, folder: str = "") -> str:
     ctx = "\n".join(f"  {k}: {v}" for k, v in (exp.get("context") or {}).items())
     parts = [
         f"EXPERIMENT: {exp['title']}",
@@ -303,6 +344,9 @@ def _record_text(exp: dict, commitment: dict, include_interpretation: bool) -> s
         ]
         if commitment.get("proposed_next"):
             parts.append(f"THE NEXT EXPERIMENT THEY PROPOSED:\n{commitment['proposed_next']}")
+    hist = _history_text(history or [], folder)
+    if hist:
+        parts.append(hist)
     return "\n\n".join(parts)
 
 
@@ -323,8 +367,10 @@ def _parse(system: str, user: str, schema: type[BaseModel]) -> BaseModel:
     return resp.parsed_output
 
 
-def blind_challenge(exp: dict, commitment: dict) -> dict:
-    user = _record_text(exp, commitment, include_interpretation=False)
+def blind_challenge(exp: dict, commitment: dict, history: list[dict] | None = None,
+                    folder: str = "") -> dict:
+    user = _record_text(exp, commitment, include_interpretation=False,
+                        history=history, folder=folder)
     return _parse(BLIND_SYSTEM, user, BlindChallenge).model_dump()
 
 

@@ -232,10 +232,18 @@
   #selpop {
     position: absolute; z-index: 50; display: none;
     background: var(--navy); color: #fff; border-radius: var(--r);
-    padding: 6px 12px; font-family: inherit; font-weight: 500; font-size: 12.5px; cursor: pointer;
-    box-shadow: 0 3px 12px rgba(2,28,69,.3);
+    font-family: inherit; font-weight: 500; font-size: 12.5px;
+    box-shadow: 0 3px 12px rgba(2,28,69,.3); overflow: hidden;
   }
-  #selpop:hover { opacity: .9; }
+  #selpop span { display: inline-block; padding: 7px 12px; cursor: pointer; }
+  #selpop span:hover { background: #0b2f61; }
+  #selpop span + span { border-left: 1px solid #1b3a68; }
+  mark {
+    background: #fdf0b8; color: inherit; border-radius: 2px; padding: 0 1px;
+  }
+  .hl-row { display: flex; align-items: baseline; gap: 8px; padding: 6px 0;
+            border-top: 1px solid var(--rule); }
+  .hl-row:first-of-type { border-top: 0; }
 
   .locked {
     border-left: 3px solid var(--lock); background: #f5f4ef;
@@ -349,7 +357,7 @@
   </div>
 </div>
 
-<div id="selpop">Define</div>
+<div id="selpop"><span data-act="define">Define</span><span data-act="mark">Highlight</span></div>
 
 <dialog id="modal"><div id="modal-body"></div>
   <div style="margin-top:16px;text-align:right"><button class="ghost" onclick="modal.close()">Close</button></div>

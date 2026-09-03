@@ -79,6 +79,10 @@ class ConnectorIn(BaseModel):
     enabled: bool = False
 
 
+class HighlightIn(BaseModel):
+    body: str
+
+
 class DefineIn(BaseModel):
     term: str
     experiment_id: int | None = None
@@ -177,6 +181,32 @@ def add_note(experiment_id: int, body: NoteIn):
         (experiment_id, body.body, body.source, body.recording_id, db.now()),
     )
     return db.experiment_bundle(experiment_id)
+
+
+@app.post("/api/experiments/{experiment_id}/highlights")
+def add_highlight(experiment_id: int, body: HighlightIn):
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(422, "Nothing selected.")
+    if not db.row("SELECT id FROM experiments WHERE id = ?", (experiment_id,)):
+        raise HTTPException(404, "No such experiment")
+    if not db.row(
+        "SELECT id FROM highlights WHERE experiment_id = ? AND body = ?", (experiment_id, text)
+    ):
+        db.insert(
+            "INSERT INTO highlights (experiment_id, body, created_at) VALUES (?, ?, ?)",
+            (experiment_id, text, db.now()),
+        )
+    return db.experiment_bundle(experiment_id)
+
+
+@app.delete("/api/highlights/{highlight_id}")
+def delete_highlight(highlight_id: int):
+    h = db.row("SELECT * FROM highlights WHERE id = ?", (highlight_id,))
+    if not h:
+        raise HTTPException(404, "No such highlight")
+    db.execute("DELETE FROM highlights WHERE id = ?", (highlight_id,))
+    return db.experiment_bundle(h["experiment_id"])
 
 
 @app.get("/api/transcription/status")
@@ -298,8 +328,10 @@ def run_challenge(commitment_id: int):
     if not commitment:
         raise HTTPException(404, "No such commitment")
     exp = db.experiment_bundle(commitment["experiment_id"])
+    history = db.folder_history(exp["id"])
+    folder = db.folder_name(exp["id"])
     try:
-        blind = llm.blind_challenge(exp, commitment)
+        blind = llm.blind_challenge(exp, commitment, history=history, folder=folder)
         div = llm.divergence(exp, commitment, blind)
     except RuntimeError as e:
         raise HTTPException(502, str(e))

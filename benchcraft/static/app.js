@@ -4,6 +4,17 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c =>
 const ul = (items, cls) =>
   `<ul class="ev ${cls}">${(items || []).map(i => `<li>${esc(i)}</li>`).join("")}</ul>`;
 const pad2 = (n) => String(n).padStart(2, "0");
+const rx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function withHighlights(text) {
+  const hs = ((EXP && EXP.highlights) || []).map(h => h.body)
+    .filter(Boolean).sort((a, b) => b.length - a.length);
+  let out = esc(text);
+  for (const h of hs) {
+    out = out.replace(new RegExp(rx(esc(h)), "gi"), m => `<mark>${m}</mark>`);
+  }
+  return out;
+}
 
 let PROJECT = null, EXP = null, CTX = [], TAB = "ref";
 let GLOSS = [], MATCHES = [], CONNS = [], FOLDERS = [], LOG = [];
@@ -208,7 +219,7 @@ function render() {
       <h3 style="margin-top:20px">Bench notes</h3>
       ${EXP.notes.length
         ? EXP.notes.map(n => `<div class="small" style="margin-bottom:6px">
-            ${esc(n.body)}
+            ${withHighlights(n.body)}
             <span class="muted tiny">${n.source === "voice" ? "dictated, " : ""}${n.created_at.slice(0, 10)}</span>
           </div>`).join("")
         : `<div class="small muted">The things that decide whether it worked and never reach
@@ -235,14 +246,14 @@ function renderCommitment(c) {
       <span class="l">Your committed interpretation</span>
       <span class="p">preserved</span>
     </div>
-    <div style="font-size:15.5px;line-height:1.6">${esc(c.interpretation)}</div>
+    <div style="font-size:15.5px;line-height:1.6">${withHighlights(c.interpretation)}</div>
     <div class="meter">
       <div class="bar"><div class="fill" style="width:${c.confidence}%"></div></div>
       <div class="v">${c.confidence}% confidence</div>
     </div>
     <dl style="margin:0">
       <dt>Expected</dt><dd>${esc(c.expected)}</dd>
-      <dt>Observed</dt><dd>${esc(c.observed)}</dd>
+      <dt>Observed</dt><dd>${withHighlights(c.observed)}</dd>
       <dt>Would change your mind</dt><dd>${esc(c.disconfirming)}</dd>
       ${c.proposed_next ? `<dt>Next experiment you proposed</dt><dd>${esc(c.proposed_next)}</dd>` : ""}
     </dl>
@@ -423,6 +434,14 @@ function renderRefRail() {
         ${shown.map(g => `<span class="chip" data-term="${esc(g.term)}">${esc(g.term)}</span>`).join("")}
       </div>
       <div id="def-detail" style="margin-top:16px"></div>
+      ${(EXP && EXP.highlights || []).length ? `
+        <div style="margin-top:18px">
+          <h3>Highlighted</h3>
+          ${EXP.highlights.map(h => `<div class="hl-row">
+            <mark style="flex:1">${esc(h.body)}</mark>
+            <button class="link" data-unmark="${h.id}">remove</button>
+          </div>`).join("")}
+        </div>` : ""}
       <div class="tiny muted" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--rule)">
         Select any word in the middle pane to define it in the context of this experiment.
       </div>
@@ -443,6 +462,10 @@ function renderRefRail() {
     el.classList.add("on");
     showDef(MATCHES.find(g => g.term === el.dataset.term)
          || GLOSS.find(g => g.term === el.dataset.term));
+  });
+  $("#rail").querySelectorAll("[data-unmark]").forEach(el => el.onclick = async () => {
+    EXP = await api(`/highlights/${el.dataset.unmark}`, "DELETE");
+    render(); renderRail();
   });
   $("#g-detect").onclick = async (e) => {
     const b = e.target;
@@ -482,7 +505,7 @@ function showDef(g) {
 
 let SELTERM = "";
 document.addEventListener("mouseup", (e) => {
-  if (e.target.id === "selpop") return;
+  if (e.target.closest && e.target.closest("#selpop")) return;
   const sel = window.getSelection();
   const text = (sel ? sel.toString() : "").trim();
   const node = sel && sel.anchorNode;
@@ -500,28 +523,36 @@ document.addEventListener("mouseup", (e) => {
   pop.style.top = `${window.scrollY + r.top - pop.offsetHeight - 8}px`;
 });
 
-$("#selpop").onclick = async () => {
+$("#selpop").querySelectorAll("[data-act]").forEach(btn => btn.onclick = async (ev) => {
+  ev.stopPropagation();
   const pop = $("#selpop");
   const term = SELTERM;
-  pop.textContent = "…";
+  const act = btn.dataset.act;
+  const label = btn.textContent;
+  btn.textContent = "…";
   try {
-    const entry = await api(`/projects/${PROJECT.id}/glossary/define`, "POST",
-      { term, experiment_id: EXP ? EXP.id : null });
-    GLOSS = await api(`/projects/${PROJECT.id}/glossary`);
-    MATCHES = await api(`/projects/${PROJECT.id}/glossary/matches/${EXP.id}`);
-    TAB = "ref";
-    document.querySelectorAll(".tab").forEach(x =>
-      x.classList.toggle("on", x.dataset.tab === "ref"));
-    renderRail();
-    showDef(entry);
+    if (act === "mark") {
+      EXP = await api(`/experiments/${EXP.id}/highlights`, "POST", { body: term });
+      render();
+      if (TAB === "ref") renderRail();
+    } else {
+      const entry = await api(`/projects/${PROJECT.id}/glossary/define`, "POST",
+        { term, experiment_id: EXP ? EXP.id : null });
+      GLOSS = await api(`/projects/${PROJECT.id}/glossary`);
+      MATCHES = await api(`/projects/${PROJECT.id}/glossary/matches/${EXP.id}`);
+      TAB = "ref";
+      document.querySelectorAll(".tab").forEach(x =>
+        x.classList.toggle("on", x.dataset.tab === "ref"));
+      renderRail();
+      showDef(entry);
+    }
   } catch (err) {
-    $("#def-detail") ? $("#def-detail").innerHTML =
-      `<div class="err">${esc(err.message)}</div>` : alert(err.message);
+    if ($("#def-detail")) $("#def-detail").innerHTML = `<div class="err">${esc(err.message)}</div>`;
   }
-  pop.textContent = "Define";
+  btn.textContent = label;
   pop.style.display = "none";
   window.getSelection().removeAllRanges();
-};
+});
 
 function renderVoiceRail() {
   const recs = (EXP && EXP.recordings) || [];
