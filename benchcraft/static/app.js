@@ -4,6 +4,15 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c =>
 const ul = (items, cls) =>
   `<ul class="ev ${cls}">${(items || []).map(i => `<li>${esc(i)}</li>`).join("")}</ul>`;
 const pad2 = (n) => String(n).padStart(2, "0");
+const SPIN = `<span class="spin"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+  stroke-width="2" stroke-linecap="round"><circle cx="8" cy="8" r="6" opacity=".25"/>
+  <path d="M8 2a6 6 0 0 1 6 6"/></svg></span>`;
+const LOCK_OPEN = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+  stroke-linecap="round"><rect x="3" y="7.5" width="10" height="7" rx="1.6"/>
+  <path d="M5.6 7.5V5a2.4 2.4 0 0 1 4.8-.3"/></svg>`;
+const LOCK_SHUT = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+  stroke-linecap="round"><rect x="3" y="7.5" width="10" height="7" rx="1.6"/>
+  <path d="M5.6 7.5V5a2.4 2.4 0 0 1 4.8 0v2.5"/></svg>`;
 const TRASH = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
   stroke-linecap="round"><path d="M2.5 4h11M6 4V2.5h4V4M4 4l.6 9.5h6.8L12 4"/></svg>`;
 const rx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -250,8 +259,8 @@ function render() {
   const ctx = Object.entries(EXP.context || {});
 
   const banner = c
-    ? `<div class="banner">&#128275; Your view is committed. Challenge unlocked.</div>`
-    : `<div class="banner wait">&#128274; Write your own reading first. The challenge stays locked until you do.</div>`;
+    ? `<div class="banner">${LOCK_OPEN}Your view is committed. Challenge unlocked.</div>`
+    : `<div class="banner wait">${LOCK_SHUT}Write your own reading first. The challenge stays locked until you do.</div>`;
 
   $("#main").innerHTML = `
     ${banner}
@@ -279,7 +288,7 @@ function render() {
         : `<div class="small muted">The things that decide whether it worked and never reach
            the spreadsheet. Consistency of a gel, a line that looked unhappy, beads sitting low.</div>`}
       <div class="row" style="margin-top:10px">
-        <input id="note" placeholder="Add an observation…" list="note-terms">
+        <input id="note" placeholder="Add an observation" list="note-terms">
         <datalist id="note-terms">
           ${SUGG.terms.map(t => `<option value="${esc(t)}"></option>`).join("")}
         </datalist>
@@ -714,7 +723,7 @@ function renderRefRail() {
   });
   $("#g-detect").onclick = async (e) => {
     const b = e.target;
-    b.disabled = true; b.innerHTML = `<span class="spin">◐</span> reading…`;
+    b.disabled = true; b.innerHTML = `${SPIN} reading`;
     try {
       GLOSS = await api(`/projects/${PROJECT.id}/glossary/detect`, "POST");
       MATCHES = await api(`/projects/${PROJECT.id}/glossary/matches/${EXP.id}`);
@@ -774,7 +783,7 @@ $("#selpop").querySelectorAll("[data-act]").forEach(btn => btn.onclick = async (
   const term = SELTERM;
   const act = btn.dataset.act;
   const label = btn.textContent;
-  btn.textContent = "…";
+  btn.textContent = "";
   try {
     if (act === "mark") {
       EXP = await api(`/experiments/${EXP.id}/highlights`, "POST", { body: term });
@@ -835,7 +844,7 @@ function renderVoiceRail() {
                </div>`
             : r.transcript_state === "running"
             ? `<div class="tiny muted" style="margin-top:7px">
-                 <span class="spin">◐</span> transcribing on this Mac${
+                 ${SPIN} transcribing on this Mac${
                    r.duration_s ? `, about ${Math.max(3, Math.round(r.duration_s / 2))}s` : ""}.
                  You can keep working.</div>`
             : `<div class="row" style="margin-top:7px">
@@ -1036,7 +1045,7 @@ function renderPapersRail() {
   $("#lit-go").onclick = async (e) => {
     const b = e.target;
     if (!LIT.query.trim()) { $("#lit-err").textContent = "Type something to search for."; return; }
-    b.disabled = true; b.innerHTML = `<span class="spin">◐</span>`;
+    b.disabled = true; b.innerHTML = SPIN;
     try {
       const out = await api("/literature/search", "POST", {
         query: LIT.query, include_preprints: LIT.preprints, reviews_only: LIT.reviews,
@@ -1054,7 +1063,7 @@ function renderPapersRail() {
 }
 
 async function openPaper(key) {
-  $("#modal-body").innerHTML = `<p class="small muted"><span class="spin">◐</span> loading…</p>`;
+  $("#modal-body").innerHTML = `<p class="small muted">${SPIN} loading</p>`;
   modal.showModal();
   drawPaper(await api(`/papers/${key}`));
 }
@@ -1109,7 +1118,7 @@ function drawPaper(p) {
   const dig = $("#p-digest") || $("#p-redigest");
   if (dig) dig.onclick = async () => {
     dig.disabled = true;
-    dig.innerHTML = `<span class="spin">◐</span> reading…`;
+    dig.innerHTML = `${SPIN} reading`;
     try {
       const out = await api(`/papers/${it.key}/digest`, "POST");
       ZITEMS = ZITEMS.map(x => x.key === it.key ? { ...x, has_digest: true } : x);
@@ -1143,13 +1152,13 @@ function renderConnRail() {
     <div style="margin-top:14px">
       <h3>Connect one</h3>
       <input id="c-name" placeholder="name" style="margin-bottom:5px">
-      <input id="c-endpoint" placeholder="https://… endpoint" style="margin-bottom:5px">
+      <input id="c-endpoint" placeholder="https://... endpoint" style="margin-bottom:5px">
       <input id="c-key" placeholder="env var holding the key (optional)" style="margin-bottom:5px">
       <label style="margin:6px 0 4px"><input type="checkbox" id="c-on" style="width:auto"> enabled</label>
       <button class="ghost sm" id="c-add" style="width:100%">Add</button>
     </div>
     <div style="margin-top:14px"><h3>Suggested</h3>
-      <div id="c-sugg" class="tiny muted">…</div></div></div>`;
+      <div id="c-sugg" class="tiny muted"></div></div></div>`;
 
   api("/connectors/suggested").then(s => {
     $("#c-sugg").innerHTML = s.map((x, i) => `
@@ -1235,7 +1244,7 @@ function wire(c, ch) {
   const btnCh = $("#btn-challenge");
   if (btnCh) btnCh.onclick = async () => {
     btnCh.disabled = true;
-    btnCh.innerHTML = `<span class="spin">◐</span> thinking against you…`;
+    btnCh.innerHTML = `${SPIN} thinking against you`;
     try {
       EXP = await api(`/commitments/${c.id}/challenge`, "POST");
       render(); renderStages(); reloadLog();
@@ -1380,7 +1389,7 @@ $("#btn-folder").onclick = async () => {
 
 $("#btn-brief").onclick = async () => {
   $("#modal-body").innerHTML = `<h2>Supervisor brief</h2>
-    <p class="small muted"><span class="spin">◐</span> Assembling from your record…</p>`;
+    <p class="small muted">${SPIN} Assembling from your record</p>`;
   modal.showModal();
   try {
     const { markdown } = await api(`/projects/${PROJECT.id}/brief`);

@@ -446,7 +446,7 @@ def supervisor_brief(project: dict, experiments: list[dict]) -> str:
                 for r in ch["responses"]:
                     block += (
                         f"\n\nAFTER SEEING THE CHALLENGE, THE RESEARCHER {r['stance'].upper()} "
-                        f"THEIR POSITION (confidence {c['confidence']} → "
+                        f"THEIR POSITION (confidence {c['confidence']} to "
                         f"{r['confidence_after']}). THEIR REASONING:\n{r['reasoning']}"
                     )
                     if r["chosen_next"]:
