@@ -11,6 +11,7 @@ let TSTATUS = { ready: false, missing: [] };
 let ZSTATUS = { ready: false }, ZCOLLS = [], ZITEMS = [], ZALL = {};
 let ZFILTER = { coll: "", engaged: true };
 let SUGG = { context_keys: [], context_values: {}, terms: [] };
+let POLL = null;
 
 const STAGE_ORDER = ["notice", "commit", "challenge", "decide"];
 
@@ -162,7 +163,9 @@ function renderStages() {
 }
 
 async function openExperiment(id) {
+  if (POLL) { clearInterval(POLL); POLL = null; }
   EXP = await api(`/experiments/${id}`);
+  if ((EXP.recordings || []).some(r => r.transcript_state === "running")) pollTranscripts();
   document.querySelectorAll(".log-item[data-id]").forEach(el =>
     el.classList.toggle("on", +el.dataset.id === id));
   render();
@@ -551,10 +554,17 @@ function renderVoiceRail() {
                  <button class="ghost sm" data-note="${r.id}">Add to bench notes</button>
                  <button class="link" data-edit="${r.id}">edit</button>
                </div>`
+            : r.transcript_state === "running"
+            ? `<div class="tiny muted" style="margin-top:7px">
+                 <span class="spin">◐</span> transcribing on this Mac${
+                   r.duration_s ? `, about ${Math.max(3, Math.round(r.duration_s / 2))}s` : ""}.
+                 You can keep working.</div>`
             : `<div class="row" style="margin-top:7px">
-                 <button class="ghost sm" data-tr="${r.id}" ${TSTATUS.ready ? "" : "disabled"}>Transcribe</button>
+                 <button class="ghost sm" data-tr="${r.id}" ${TSTATUS.ready ? "" : "disabled"}>${
+                   r.transcript_state === "failed" ? "Try again" : "Transcribe"}</button>
                  <button class="link" data-edit="${r.id}">type it myself</button>
-               </div>`}
+               </div>
+               ${r.transcript_error ? `<div class="err tiny">${esc(r.transcript_error)}</div>` : ""}`}
         </div>`).join("")
         : `<div class="small muted">Nothing recorded for this experiment.</div>`}
     </div></div>`;
@@ -570,10 +580,11 @@ function renderVoiceRail() {
   file.onchange = () => file.files[0] && upload(file.files[0]);
 
   $("#rail").querySelectorAll("[data-tr]").forEach(el => el.onclick = async () => {
-    el.disabled = true; el.innerHTML = `<span class="spin">◐</span> transcribing…`;
+    el.disabled = true;
     try {
       EXP = await api(`/recordings/${el.dataset.tr}/transcribe`, "POST");
-      render(); renderRail();
+      renderRail();
+      pollTranscripts();
     } catch (err) {
       $("#v-err").textContent = err.message;
       el.disabled = false; el.textContent = "Transcribe";
@@ -598,6 +609,23 @@ function renderVoiceRail() {
       modal.close(); render(); renderRail();
     };
   });
+}
+
+function pollTranscripts() {
+  if (POLL) return;
+  POLL = setInterval(async () => {
+    if (!EXP) return;
+    const fresh = await api(`/experiments/${EXP.id}`);
+    const running = (fresh.recordings || []).some(r => r.transcript_state === "running");
+    EXP = fresh;
+    if (TAB === "voice") renderRail();
+    if (!running) {
+      clearInterval(POLL);
+      POLL = null;
+      render();
+      if (TAB === "voice") renderRail();
+    }
+  }, 2000);
 }
 
 async function upload(f) {

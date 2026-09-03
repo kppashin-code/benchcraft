@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS recordings (
     transcript        TEXT NOT NULL DEFAULT '',
     transcript_engine TEXT NOT NULL DEFAULT '',
     transcript_state  TEXT NOT NULL DEFAULT 'pending',
+    transcript_error  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL
 );
 
@@ -178,6 +179,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ecols = {r["name"] for r in conn.execute("PRAGMA table_info(experiments)").fetchall()}
     if ecols and "folder_id" not in ecols:
         conn.execute("ALTER TABLE experiments ADD COLUMN folder_id INTEGER REFERENCES folders(id)")
+    rcols = {r["name"] for r in conn.execute("PRAGMA table_info(recordings)").fetchall()}
+    if rcols and "transcript_error" not in rcols:
+        conn.execute("ALTER TABLE recordings ADD COLUMN transcript_error TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        """UPDATE recordings SET transcript_state = 'failed',
+           transcript_error = 'Interrupted when Benchcraft restarted. Run it again.'
+           WHERE transcript_state = 'running'"""
+    )
 
 
 def init() -> None:

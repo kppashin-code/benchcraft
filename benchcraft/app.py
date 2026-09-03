@@ -1,6 +1,7 @@
 import json
 import re
 import shutil
+import threading
 import uuid
 from pathlib import Path
 
@@ -206,21 +207,49 @@ async def upload_recording(experiment_id: int, file: UploadFile = File(...)):
     return {"recording_id": rid, "experiment": db.experiment_bundle(experiment_id)}
 
 
+def _transcribe_worker(recording_id: int, path: str) -> None:
+    try:
+        text, engine = transcribe.transcribe(Path(path))
+    except transcribe.Unavailable as e:
+        db.execute(
+            """UPDATE recordings SET transcript_state = 'failed', transcript_error = ?
+               WHERE id = ?""",
+            (str(e), recording_id),
+        )
+        return
+    except Exception as e:
+        db.execute(
+            """UPDATE recordings SET transcript_state = 'failed', transcript_error = ?
+               WHERE id = ?""",
+            (f"Transcription failed: {e}", recording_id),
+        )
+        return
+    db.execute(
+        """UPDATE recordings SET transcript = ?, transcript_engine = ?,
+           transcript_state = 'done', transcript_error = '' WHERE id = ?""",
+        (text, engine, recording_id),
+    )
+
+
 @app.post("/api/recordings/{recording_id}/transcribe")
 def run_transcription(recording_id: int):
     rec = db.row("SELECT * FROM recordings WHERE id = ?", (recording_id,))
     if not rec:
         raise HTTPException(404, "No such recording")
-    try:
-        text, engine = transcribe.transcribe(Path(rec["stored_path"]))
-    except transcribe.Unavailable as e:
-        db.execute("UPDATE recordings SET transcript_state = 'failed' WHERE id = ?", (recording_id,))
-        raise HTTPException(503, str(e))
+    if rec["transcript_state"] == "running":
+        return db.experiment_bundle(rec["experiment_id"])
+    st = transcribe.status()
+    if not st["ready"]:
+        raise HTTPException(503, "; ".join(st["missing"]))
+
     db.execute(
-        """UPDATE recordings SET transcript = ?, transcript_engine = ?,
-           transcript_state = 'done' WHERE id = ?""",
-        (text, engine, recording_id),
+        """UPDATE recordings SET transcript_state = 'running', transcript_error = ''
+           WHERE id = ?""",
+        (recording_id,),
     )
+    threading.Thread(
+        target=_transcribe_worker, args=(recording_id, rec["stored_path"]), daemon=True
+    ).start()
     return db.experiment_bundle(rec["experiment_id"])
 
 
