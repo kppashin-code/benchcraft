@@ -6,17 +6,17 @@
 <title>Benchcraft</title>
 <style>
   :root {
-    --bg: #f6f5f1;
+    --bg: #f6f8fb;
     --panel: #ffffff;
-    --ink: #1a1a18;
-    --ink-2: #55534d;
-    --ink-3: #8b8880;
-    --rule: #e4e1d9;
-    --mine: #7a3b2e;
-    --ai: #2f5d62;
-    --ai-soft: #eef4f4;
-    --lock: #6b6248;
-    --third: #5a4a7a;
+    --ink: #021C45;
+    --ink-2: #4b5d78;
+    --ink-3: #8FA1B6;
+    --rule: #dde5ee;
+    --mine: #021C45;
+    --ai: #016CC4;
+    --ai-soft: #eaf3fd;
+    --lock: #4b5d78;
+    --third: #5aa9e6;
     --r: 8px;
     --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   }
@@ -72,7 +72,7 @@
     padding: 8px 10px; border: 1px solid var(--rule); border-radius: 6px;
     background: #fff; resize: vertical;
   }
-  input:focus, textarea:focus { outline: 2px solid #cdc6b4; outline-offset: -1px; }
+  input:focus, textarea:focus { outline: 2px solid #a9c6e4; outline-offset: -1px; }
   label { display: block; font-weight: 600; font-size: 13px; margin: 14px 0 5px; }
   label .hint { display: block; font-weight: 400; color: var(--ink-3); font-size: 12.5px; }
 
@@ -84,13 +84,13 @@
   .src {
     padding: 9px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 2px;
   }
-  .src:hover { background: #f3f1ea; }
-  .src.on { background: #edeadf; }
+  .src:hover { background: #eef2f7; }
+  .src.on { background: #e3ecf6; }
   .src .t { font-weight: 500; font-size: 13.5px; }
   .src .m { font-size: 11.5px; color: var(--ink-3); }
 
   .locked {
-    border-left: 3px solid var(--lock); background: #faf8f1;
+    border-left: 3px solid var(--lock); background: #f4f7fb;
     padding: 14px 17px; margin-bottom: 18px; border-radius: 0 var(--r) var(--r) 0;
   }
   .stamp {
@@ -109,12 +109,12 @@
     font: 600 10.5px inherit; text-transform: uppercase; letter-spacing: .09em;
     color: var(--ai); margin-bottom: 11px;
   }
-  .hyp { border-top: 1px solid #d8e4e4; padding: 13px 0 3px; }
+  .hyp { border-top: 1px solid #d6e6f6; padding: 13px 0 3px; }
   .hyp:first-of-type { border-top: 0; padding-top: 3px; }
   .hyp .lab { font-weight: 600; font-size: 14.5px; }
   .kind {
     font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--ai);
-    border: 1px solid #b9cfd0; border-radius: 20px; padding: 1px 8px; margin-left: 6px;
+    border: 1px solid #b3d3f0; border-radius: 20px; padding: 1px 8px; margin-left: 6px;
     vertical-align: 1.5px;
   }
   .ev { font-size: 13.5px; margin: 7px 0 0; padding-left: 0; list-style: none; }
@@ -126,7 +126,7 @@
 
   .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
   .chip {
-    font-size: 11.5px; background: #f1efe7; border: 1px solid var(--rule);
+    font-size: 11.5px; background: #eaeff6; border: 1px solid var(--rule);
     border-radius: 20px; padding: 2px 9px;
   }
   .ctx-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 5px; margin-bottom: 5px; }
@@ -156,25 +156,25 @@
   .rec audio { width: 100%; height: 32px; margin: 7px 0; }
   .verbatim {
     font: 13px/1.55 ui-monospace, "SF Mono", Menlo, monospace;
-    background: #f8f7f2; border: 1px solid var(--rule); border-radius: 5px;
+    background: #f4f7fb; border: 1px solid var(--rule); border-radius: 5px;
     padding: 9px 11px; white-space: pre-wrap; margin-top: 6px;
   }
   .drop {
     border: 1.5px dashed var(--rule); border-radius: var(--r); padding: 18px;
     text-align: center; color: var(--ink-3); font-size: 13px; cursor: pointer;
   }
-  .drop.over { border-color: var(--mine); background: #faf4f2; color: var(--mine); }
+  .drop.over { border-color: var(--ai); background: #eaf3fd; color: var(--mine); }
 
   .conn { border: 1px solid var(--rule); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; }
   .third-block {
-    border-left: 3px solid var(--third); background: #f4f1f8;
+    border-left: 3px solid var(--third); background: #f0f6fc;
     padding: 14px 16px; border-radius: 0 var(--r) var(--r) 0; margin-bottom: 16px;
   }
   .third-block .who { color: var(--third); }
 
   dialog { border: 1px solid var(--rule); border-radius: 10px; padding: 24px;
            max-width: 760px; width: 92%; }
-  dialog::backdrop { background: rgba(26,26,24,.35); }
+  dialog::backdrop { background: rgba(2,28,69,.38); }
   .row { display: flex; gap: 8px; align-items: center; }
   .spin { display: inline-block; animation: sp 1s linear infinite; }
   @keyframes sp { to { transform: rotate(360deg); } }
@@ -186,8 +186,9 @@
 </head>
 <body>
 <header>
+  <img src="/static/logo-mark.png" alt="" width="26" height="26">
   <h1>Benchcraft</h1>
-  <span class="tag">form your view, then meet the argument</span>
+  <span class="tag">autonomous lab notebook</span>
   <span class="spacer"></span>
   <span id="projname" class="tag"></span>
   <button class="ghost sm" id="btn-brief">Brief</button>

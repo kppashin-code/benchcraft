@@ -196,7 +196,7 @@ function renderChallenge(ch, c, resp) {
       <h3 style="margin-top:16px">Your record didn't say</h3>${ul(b.record_is_silent_on, "con")}` : ""}
   </div>
 
-  ${d ? `<div class="ai-block" style="border-left-color:var(--mine);background:#faf4f2">
+  ${d ? `<div class="ai-block" style="border-left-color:var(--mine);background:#eef1f7">
     <div class="who" style="color:var(--mine)">Where you and it diverge</div>
     <div class="small"><strong>Your reading maps to:</strong> ${esc(d.matches)}</div>
     ${(d.they_saw_that_you_missed || []).length ? `
