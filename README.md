@@ -24,7 +24,7 @@ brew install ffmpeg
 
 ## The first five minutes
 
-I am hoping that within the The first 5 minutes of someone using this tool: they're able to write notes on some of the scientific experiments they're running, come up with some judgments about their initial results, and then ultimately, hopefully, be able to connect them to Zenodo-type readings or articles that they've done for previous research. I'm hoping that ultimately someone will be able to first make their own interpretation, but then further augment it with other resources and tools available to them.
+I am hoping that within the The first 5 minutes of someone using this tool: they're able to write notes on some of the scientific experiments they're running, come up with some judgments about their initial results, and then ultimately, hopefully, be able to connect them to Zotero-type-organized readings or articles that they've done for previous research. I'm hoping that ultimately someone will be able to first make their own interpretation, but then further augment it with other resources and tools available to them.
 
 ## What I want to be told I'm wrong about
 
