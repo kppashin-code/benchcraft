@@ -40,6 +40,6 @@ I personally do a lot of work in voice memos. I think it's easier to sometimes v
 
 I think that's potentially a future consideration I can do. This matters to me because privacy and security are utmost. I think the IP is especially very important to science. If you want to further augment it with other agents, then you can bring in connectors and different things like that, but it is never folded directly into the thing I'm going to be building.
 
-## Still to write
+## Licence
 
-- Licence
+MIT.
