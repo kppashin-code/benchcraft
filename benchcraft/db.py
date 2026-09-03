@@ -118,6 +118,33 @@ CREATE TABLE IF NOT EXISTS connector_calls (
     created_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS paper_digests (
+    id          INTEGER PRIMARY KEY,
+    zotero_key  TEXT NOT NULL UNIQUE,
+    main_claim  TEXT NOT NULL,
+    experiments TEXT NOT NULL DEFAULT '[]',
+    methods     TEXT NOT NULL DEFAULT '[]',
+    limitations TEXT NOT NULL DEFAULT '[]',
+    source      TEXT NOT NULL DEFAULT '',
+    model       TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS paper_notes (
+    id         INTEGER PRIMARY KEY,
+    zotero_key TEXT NOT NULL UNIQUE,
+    body       TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS experiment_papers (
+    id            INTEGER PRIMARY KEY,
+    experiment_id INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+    zotero_key    TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    UNIQUE (experiment_id, zotero_key)
+);
+
 CREATE INDEX IF NOT EXISTS idx_exp_project ON experiments(project_id);
 CREATE INDEX IF NOT EXISTS idx_commit_exp  ON commitments(experiment_id);
 CREATE INDEX IF NOT EXISTS idx_chal_commit ON challenges(commitment_id);
@@ -184,6 +211,10 @@ def experiment_bundle(experiment_id: int) -> dict | None:
     )
     exp["recordings"] = rows(
         "SELECT * FROM recordings WHERE experiment_id = ? ORDER BY created_at", (experiment_id,)
+    )
+    exp["papers"] = rows(
+        "SELECT * FROM experiment_papers WHERE experiment_id = ? ORDER BY created_at",
+        (experiment_id,),
     )
     exp["connector_calls"] = rows(
         """SELECT cc.*, c.name AS connector_name

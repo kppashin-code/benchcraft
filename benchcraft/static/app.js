@@ -6,6 +6,8 @@ const ul = (items, cls) =>
 
 let PROJECT = null, EXP = null, CTX = [], TAB = "plain";
 let GLOSS = [], MATCHES = [], CONNS = [], TSTATUS = { ready: false, missing: [] };
+let ZSTATUS = { ready: false }, ZCOLLS = [], ZITEMS = [], ZALL = {};
+let ZFILTER = { coll: '', engaged: true };
 
 async function api(path, method = "GET", body) {
   const r = await fetch(`/api${path}`, {
@@ -25,6 +27,12 @@ async function boot() {
   PROJECT = projects[0];
   $("#projname").textContent = PROJECT.name;
   TSTATUS = await api("/transcription/status");
+  ZSTATUS = await api("/zotero/status");
+  if (ZSTATUS.ready) {
+    try {
+      for (const it of await api("/zotero/items")) ZALL[it.key] = it;
+    } catch (e) { ZSTATUS = { ready: false, detail: e.message }; }
+  }
   await refreshList();
 }
 
@@ -94,11 +102,30 @@ function render() {
         <button class="ghost sm" id="btn-note">Add</button>
       </div>
     </div>
+    ${renderLinkedPapers()}
     ${renderConnectorOutput()}
     ${c ? renderCommitment(c) : renderCommitForm()}
     ${c ? (ch ? renderChallenge(ch, c, resp) : renderChallengeGate(c)) : ""}
   `;
   wire(c, ch);
+}
+
+function renderLinkedPapers() {
+  const ps = EXP.papers || [];
+  if (!ps.length) return "";
+  return `<div class="card">
+    <h3>Papers behind this experiment</h3>
+    <p class="tiny muted" style="margin-top:-6px">Your own reading, from your Zotero library.
+    Attached for your reference; not passed to the challenge.</p>
+    ${ps.map(p => {
+      const it = ZALL[p.zotero_key];
+      return `<div class="paper">
+        <div class="pt" data-openc="${esc(p.zotero_key)}">${esc(it ? it.title : p.zotero_key)}</div>
+        ${it ? `<div class="pm">${esc(it.authors.join(", "))}${it.more_authors ? " et al." : ""}
+          ${it.date ? ` · ${esc(it.date)}` : ""}</div>` : ""}
+      </div>`;
+    }).join("")}
+  </div>`;
 }
 
 function renderConnectorOutput() {
@@ -243,7 +270,143 @@ function renderChallenge(ch, c, resp) {
 function renderRail() {
   if (TAB === "plain") return renderPlainRail();
   if (TAB === "voice") return renderVoiceRail();
+  if (TAB === "papers") return renderPapersRail();
   return renderConnRail();
+}
+
+async function loadPapers() {
+  if (!ZSTATUS.ready) return;
+  const q = new URLSearchParams();
+  if (ZFILTER.coll) q.set("collection", ZFILTER.coll);
+  if (ZFILTER.engaged) q.set("engaged_only", "true");
+  [ZCOLLS, ZITEMS] = await Promise.all([
+    ZCOLLS.length ? Promise.resolve(ZCOLLS) : api("/zotero/collections"),
+    api(`/zotero/items?${q}`),
+  ]);
+  renderRail();
+}
+
+function renderPapersRail() {
+  if (!ZSTATUS.ready) {
+    $("#rail").innerHTML = `<h3>Papers</h3>
+      <div class="small" style="color:#8d3b32">${esc(ZSTATUS.detail || "Zotero not found.")}</div>
+      <div class="tiny muted" style="margin-top:8px">Benchcraft reads your local Zotero library
+      directly. Nothing is uploaded and no account is connected.</div>`;
+    return;
+  }
+  const linked = new Set((EXP && EXP.papers || []).map(p => p.zotero_key));
+  $("#rail").innerHTML = `
+    <h3>From your library</h3>
+    <p class="tiny muted" style="margin-top:-5px">Your own reading, available before you commit.
+    These are the papers that got you here, so they belong to your judgement, not the AI's.</p>
+    <select id="z-coll" style="margin-bottom:6px">
+      <option value="">All ${ZSTATUS.items} items</option>
+      ${ZCOLLS.map(c => `<option value="${esc(c.key)}" ${ZFILTER.coll === c.key ? "selected" : ""}>
+        ${esc(c.name)} (${c.n})</option>`).join("")}
+    </select>
+    <label style="margin:0 0 8px;font-weight:400;font-size:12px">
+      <input type="checkbox" id="z-eng" ${ZFILTER.engaged ? "checked" : ""} style="width:auto">
+      only what I've tagged or annotated</label>
+    <div>
+      ${ZITEMS.length ? ZITEMS.map(it => `
+        <div class="paper">
+          <div class="pt" data-open="${esc(it.key)}">${esc(it.title)}</div>
+          <div class="pm">${esc(it.authors.join(", "))}${it.more_authors ? " et al." : ""}
+            ${it.date ? ` · ${esc(it.date)}` : ""}${it.journal ? ` · ${esc(it.journal)}` : ""}</div>
+          <div style="margin-top:5px">
+            ${it.has_pdf ? `<span class="pill">pdf</span>` : ""}
+            ${it.tags.length ? `<span class="pill">${it.tags.length} tags</span>` : ""}
+            ${it.has_digest ? `<span class="pill on">digest</span>` : ""}
+            ${it.has_my_note ? `<span class="pill mine">my note</span>` : ""}
+            ${EXP ? `<button class="link" style="margin-left:6px" data-link="${esc(it.key)}">${
+              linked.has(it.key) ? "unlink" : "attach"}</button>` : ""}
+          </div>
+        </div>`).join("") : `<div class="small muted">Nothing matches.</div>`}
+    </div>
+    <div class="err tiny" id="z-err"></div>`;
+
+  $("#z-coll").onchange = (e) => { ZFILTER.coll = e.target.value; loadPapers(); };
+  $("#z-eng").onchange = (e) => { ZFILTER.engaged = e.target.checked; loadPapers(); };
+  $("#rail").querySelectorAll("[data-open]").forEach(el =>
+    el.onclick = () => openPaper(el.dataset.open));
+  $("#rail").querySelectorAll("[data-link]").forEach(el => el.onclick = async () => {
+    const k = el.dataset.link;
+    EXP = linked.has(k)
+      ? await api(`/experiments/${EXP.id}/papers/${k}`, "DELETE")
+      : await api(`/experiments/${EXP.id}/papers`, "POST", { zotero_key: k });
+    render(); renderRail();
+  });
+}
+
+async function openPaper(key) {
+  $("#modal-body").innerHTML = `<p class="small muted"><span class="spin">◐</span> loading…</p>`;
+  modal.showModal();
+  const p = await api(`/papers/${key}`);
+  drawPaper(p);
+}
+
+function drawPaper(p) {
+  const it = p.item, d = p.digest;
+  $("#modal-body").innerHTML = `
+    <h2 style="font-size:18px">${esc(it.title)}</h2>
+    <div class="small muted">${esc(it.authors.join(", "))}${it.more_authors ? " et al." : ""}
+      ${it.date ? ` · ${esc(it.date)}` : ""}${it.journal ? ` · ${esc(it.journal)}` : ""}</div>
+    ${it.doi ? `<div class="tiny"><a href="https://doi.org/${esc(it.doi)}" target="_blank"
+      rel="noopener">doi.org/${esc(it.doi)}</a></div>` : ""}
+    ${it.tags.length ? `<div class="chips">${it.tags.map(t =>
+      `<span class="chip">${esc(t)}</span>`).join("")}</div>` : ""}
+
+    <h3 style="margin-top:20px">My note</h3>
+    <p class="tiny muted" style="margin-top:-6px">Yours. Written after you read it, not instead
+    of reading it.</p>
+    <textarea id="p-note" rows="4" placeholder="What did you take from this?">${esc(p.my_note)}</textarea>
+    <button class="ghost sm" id="p-save" style="margin-top:6px">Save note</button>
+    <span class="tiny muted" id="p-saved" style="margin-left:8px"></span>
+
+    <h3 style="margin-top:22px">What this paper did</h3>
+    ${d ? `
+      <div class="ai-block">
+        <div class="who">Digest · ${esc(d.source)}</div>
+        <div class="small">${esc(d.main_claim)}</div>
+        ${d.experiments.length ? `<h3 style="margin-top:14px">Experiments</h3>
+          ${ul(d.experiments, "pro")}` : ""}
+        ${d.methods.length ? `<h3 style="margin-top:12px">Methods</h3>
+          ${ul(d.methods, "pro")}` : ""}
+        ${d.limitations.length ? `<h3 style="margin-top:12px">Limitations the authors state</h3>
+          ${ul(d.limitations, "con")}` : ""}
+        <div class="tiny muted" style="margin-top:12px">Describes what the authors did and claim.
+        It will not tell you what this means for your experiment. That reading is yours.</div>
+      </div>
+      <button class="ghost sm" id="p-redigest">Regenerate</button>`
+    : `<div class="gate">
+        <button class="ai" id="p-digest">Digest this paper</button>
+        <div class="tiny" style="margin-top:10px;max-width:46ch;margin-inline:auto">
+          Main claim, the experiments actually run, and methods with the numbers.
+          ${it.has_pdf ? "Reads the stored PDF." : "No PDF stored, so it will work from the abstract only."}
+        </div>
+      </div>`}
+    ${it.abstract ? `<h3 style="margin-top:20px">Abstract</h3>
+      <div class="small muted">${esc(it.abstract)}</div>` : ""}
+    <div class="err" id="p-err"></div>`;
+
+  $("#p-save").onclick = async () => {
+    const out = await api(`/papers/${it.key}/note`, "PUT", { body: $("#p-note").value });
+    $("#p-saved").textContent = "saved";
+    ZITEMS = ZITEMS.map(x => x.key === it.key ? { ...x, has_my_note: !!out.my_note } : x);
+  };
+  const dig = $("#p-digest") || $("#p-redigest");
+  if (dig) dig.onclick = async () => {
+    dig.disabled = true;
+    dig.innerHTML = `<span class="spin">◐</span> reading…`;
+    try {
+      const out = await api(`/papers/${it.key}/digest`, "POST");
+      ZITEMS = ZITEMS.map(x => x.key === it.key ? { ...x, has_digest: true } : x);
+      drawPaper(out); renderRail();
+    } catch (e) {
+      dig.disabled = false; dig.textContent = "Digest this paper";
+      $("#p-err").textContent = e.message;
+    }
+  };
 }
 
 function renderPlainRail() {
@@ -465,6 +628,9 @@ function wire(c, ch) {
   const rconf = $("#r-confidence");
   if (rconf) rconf.oninput = () => $("#r-conflabel").textContent = rconf.value;
 
+  $("#main").querySelectorAll("[data-openc]").forEach(el =>
+    el.onclick = () => openPaper(el.dataset.openc));
+
   const note = $("#btn-note");
   if (note) note.onclick = async () => {
     const body = $("#note").value.trim();
@@ -571,7 +737,8 @@ function renderNewExperiment(parentId) {
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   TAB = t.dataset.tab;
   document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x === t));
-  renderRail();
+  if (TAB === "papers" && ZSTATUS.ready && !ZITEMS.length) loadPapers();
+  else renderRail();
 });
 
 $("#btn-new").onclick = () => renderNewExperiment();

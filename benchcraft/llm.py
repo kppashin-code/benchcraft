@@ -90,6 +90,28 @@ class Divergence(BaseModel):
     )
 
 
+class PaperDigest(BaseModel):
+    main_claim: str = Field(
+        description="The single thing this paper claims to have shown, in one or two sentences, "
+        "phrased as the authors would phrase it. Keep their hedging: if they say 'suggests', do "
+        "not write 'demonstrates'."
+    )
+    experiments: list[str] = Field(
+        description="The main experiments the authors actually ran, one per item, each naming the "
+        "system and the comparison. 'Encapsulated H9-derived organoids in fast vs slow-relaxing "
+        "alginate and compared TH+ fraction at day 40', not 'studied the effect of stiffness'."
+    )
+    methods: list[str] = Field(
+        description="Key methods with the specifics a person would need to repeat them: cell "
+        "lines, concentrations, timepoints, n, imaging or sequencing modality. Include exact "
+        "numbers when the text gives them. Omit anything the text does not state."
+    )
+    limitations: list[str] = Field(
+        description="Limitations the AUTHORS themselves state, in their words. Do not add "
+        "criticisms of your own. Empty list if they state none."
+    )
+
+
 class GlossaryEntry(BaseModel):
     term: str = Field(description="The term exactly as it appears in the record.")
     plain: str = Field(
@@ -175,6 +197,34 @@ to write, not yours.
 
 Skip anything a general reader already understands. Skip terms you cannot \
 define confidently rather than guessing. UK spelling."""
+
+DIGEST_SYSTEM = """\
+You summarise a scientific paper for a researcher who has saved it to their own \
+reference library.
+
+You describe what this paper did and what its authors claim. You do NOT say what \
+it means for the reader's own work, whether it supports or undermines any \
+hypothesis they hold, or what they should do next. The reader has their own \
+experiment in progress and their reading of this paper against it is theirs to \
+make, not yours.
+
+Rules:
+
+1. Never state a finding, number, cell line, concentration or timepoint that is \
+not in the text you were given. If the text is an abstract only, you will have \
+far less detail; say less rather than inventing the rest.
+
+2. Keep the authors' own hedging. If they write that something 'may contribute \
+to' an effect, do not upgrade it to 'causes'.
+
+3. No evaluation. Do not call a study elegant, robust, underpowered, seminal or \
+flawed. Report limitations only where the authors state them themselves.
+
+4. Concrete over abstract. 'Compared 2% and 4% w/v alginate at day 40, n=3 \
+wells' beats 'investigated the role of matrix concentration'.
+
+This digest exists so a researcher can find a paper again and recall its shape. \
+It is not a substitute for reading it."""
 
 BRIEF_SYSTEM = """\
 You assemble a supervisor-meeting brief strictly from a researcher's own \
@@ -274,6 +324,15 @@ def glossary_terms(text: str, known: list[str]) -> list[dict]:
     )
     out = _parse(GLOSSARY_SYSTEM, user, GlossaryOut)
     return [e.model_dump() for e in out.entries]
+
+
+def paper_digest(title: str, text: str, source: str) -> dict:
+    user = (
+        f"PAPER: {title}\n"
+        f"WHAT YOU WERE GIVEN: {source}\n\n"
+        f"TEXT:\n{text}"
+    )
+    return _parse(DIGEST_SYSTEM, user, PaperDigest).model_dump()
 
 
 def supervisor_brief(project: dict, experiments: list[dict]) -> str:

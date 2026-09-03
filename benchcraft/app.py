@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import connectors, db, llm, transcribe
+from . import connectors, db, llm, transcribe, zotero
 
 app = FastAPI(title="Benchcraft")
 STATIC = Path(__file__).resolve().parent / "static"
@@ -75,6 +75,14 @@ class ConnectorIn(BaseModel):
     key_env: str = ""
     note: str = ""
     enabled: bool = False
+
+
+class PaperNoteIn(BaseModel):
+    body: str
+
+
+class PaperLinkIn(BaseModel):
+    zotero_key: str
 
 
 class ConnectorCallIn(BaseModel):
@@ -407,6 +415,108 @@ def call_connector(connector_id: int, body: ConnectorCallIn):
     if not ok:
         raise HTTPException(502, text)
     return db.experiment_bundle(body.experiment_id)
+
+
+@app.get("/api/zotero/status")
+def zotero_status():
+    return zotero.status()
+
+
+@app.get("/api/zotero/collections")
+def zotero_collections():
+    try:
+        return zotero.collections()
+    except zotero.Unavailable as e:
+        raise HTTPException(503, str(e))
+
+
+@app.get("/api/zotero/items")
+def zotero_items(collection: str | None = None, engaged_only: bool = False):
+    try:
+        out = zotero.items(collection_key=collection, engaged_only=engaged_only)
+    except zotero.Unavailable as e:
+        raise HTTPException(503, str(e))
+    digests = {d["zotero_key"] for d in db.rows("SELECT zotero_key FROM paper_digests")}
+    noted = {n["zotero_key"] for n in db.rows("SELECT zotero_key FROM paper_notes WHERE body != ''")}
+    for it in out:
+        it["has_digest"] = it["key"] in digests
+        it["has_my_note"] = it["key"] in noted
+    return out
+
+
+@app.get("/api/papers/{key}")
+def get_paper(key: str):
+    try:
+        it = zotero.item(key)
+    except zotero.Unavailable as e:
+        raise HTTPException(503, str(e))
+    if not it:
+        raise HTTPException(404, "Not in your Zotero library")
+    d = db.row("SELECT * FROM paper_digests WHERE zotero_key = ?", (key,))
+    if d:
+        for f in ("experiments", "methods", "limitations"):
+            d[f] = json.loads(d[f])
+    note = db.row("SELECT * FROM paper_notes WHERE zotero_key = ?", (key,))
+    return {"item": it, "digest": d, "my_note": note["body"] if note else ""}
+
+
+@app.post("/api/papers/{key}/digest")
+def make_digest(key: str):
+    try:
+        it = zotero.item(key)
+        if not it:
+            raise HTTPException(404, "Not in your Zotero library")
+        text, source = zotero.source_text(key)
+    except zotero.Unavailable as e:
+        raise HTTPException(503, str(e))
+    try:
+        d = llm.paper_digest(it["title"], text, source)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    db.execute(
+        """INSERT INTO paper_digests
+           (zotero_key, main_claim, experiments, methods, limitations, source, model, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (zotero_key) DO UPDATE SET
+             main_claim = excluded.main_claim, experiments = excluded.experiments,
+             methods = excluded.methods, limitations = excluded.limitations,
+             source = excluded.source, model = excluded.model, created_at = excluded.created_at""",
+        (key, d["main_claim"], json.dumps(d["experiments"]), json.dumps(d["methods"]),
+         json.dumps(d["limitations"]), source, llm.MODEL, db.now()),
+    )
+    return get_paper(key)
+
+
+@app.put("/api/papers/{key}/note")
+def set_paper_note(key: str, body: PaperNoteIn):
+    db.execute(
+        """INSERT INTO paper_notes (zotero_key, body, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT (zotero_key) DO UPDATE SET body = excluded.body,
+           updated_at = excluded.updated_at""",
+        (key, body.body, db.now()),
+    )
+    return get_paper(key)
+
+
+@app.post("/api/experiments/{experiment_id}/papers")
+def link_paper(experiment_id: int, body: PaperLinkIn):
+    if not db.row("SELECT id FROM experiments WHERE id = ?", (experiment_id,)):
+        raise HTTPException(404, "No such experiment")
+    db.execute(
+        """INSERT INTO experiment_papers (experiment_id, zotero_key, created_at)
+           VALUES (?, ?, ?) ON CONFLICT (experiment_id, zotero_key) DO NOTHING""",
+        (experiment_id, body.zotero_key, db.now()),
+    )
+    return db.experiment_bundle(experiment_id)
+
+
+@app.delete("/api/experiments/{experiment_id}/papers/{key}")
+def unlink_paper(experiment_id: int, key: str):
+    db.execute(
+        "DELETE FROM experiment_papers WHERE experiment_id = ? AND zotero_key = ?",
+        (experiment_id, key),
+    )
+    return db.experiment_bundle(experiment_id)
 
 
 @app.get("/api/projects/{project_id}/brief")
