@@ -3,11 +3,15 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const ul = (items, cls) =>
   `<ul class="ev ${cls}">${(items || []).map(i => `<li>${esc(i)}</li>`).join("")}</ul>`;
+const pad2 = (n) => String(n).padStart(2, "0");
 
-let PROJECT = null, EXP = null, CTX = [], TAB = "plain";
-let GLOSS = [], MATCHES = [], CONNS = [], TSTATUS = { ready: false, missing: [] };
+let PROJECT = null, EXP = null, CTX = [], TAB = "ref";
+let GLOSS = [], MATCHES = [], CONNS = [], FOLDERS = [], LOG = [];
+let TSTATUS = { ready: false, missing: [] };
 let ZSTATUS = { ready: false }, ZCOLLS = [], ZITEMS = [], ZALL = {};
-let ZFILTER = { coll: '', engaged: true };
+let ZFILTER = { coll: "", engaged: true };
+
+const STAGE_ORDER = ["notice", "commit", "challenge", "decide"];
 
 async function api(path, method = "GET", body) {
   const r = await fetch(`/api${path}`, {
@@ -19,13 +23,20 @@ async function api(path, method = "GET", body) {
   return r.json();
 }
 
+function stageOf(exp) {
+  if (!exp || !exp.commitments || !exp.commitments.length) return "notice";
+  const c = exp.commitments[exp.commitments.length - 1];
+  if (!c.challenges.length) return "commit";
+  const ch = c.challenges[c.challenges.length - 1];
+  return ch.responses.length ? "decide" : "challenge";
+}
+
 async function boot() {
   let projects = await api("/projects");
   if (!projects.length) {
     projects = [await api("/projects", "POST", { name: "Untitled project", description: "" })];
   }
   PROJECT = projects[0];
-  $("#projname").textContent = PROJECT.name;
   TSTATUS = await api("/transcription/status");
   ZSTATUS = await api("/zotero/status");
   if (ZSTATUS.ready) {
@@ -37,27 +48,72 @@ async function boot() {
 }
 
 async function refreshList(selectId) {
-  const exps = await api(`/projects/${PROJECT.id}/experiments`);
-  $("#srclist").innerHTML = exps.length
-    ? exps.map(e => `
-      <div class="src ${EXP && e.id === EXP.id ? "on" : ""}" data-id="${e.id}">
-        <div class="t">${esc(e.title)}</div>
-        <div class="m">${e.commitment_count ? `${e.commitment_count} commitment${e.commitment_count > 1 ? "s" : ""}` : "no commitment yet"}${e.recording_count ? ` · ${e.recording_count} voice` : ""}</div>
-      </div>`).join("")
-    : `<div class="small muted">Nothing yet.</div>`;
-  $("#srclist").querySelectorAll(".src").forEach(el =>
-    el.onclick = () => openExperiment(+el.dataset.id));
-
-  const target = selectId || (EXP && EXP.id) || (exps[0] && exps[0].id);
+  [LOG, FOLDERS] = await Promise.all([
+    api(`/projects/${PROJECT.id}/experiments`),
+    api(`/projects/${PROJECT.id}/folders`),
+  ]);
+  renderLog();
+  const target = selectId || (EXP && EXP.id) || (LOG[0] && LOG[0].id);
   if (target) await openExperiment(target);
-  else { renderNewExperiment(); renderRail(); }
+  else { renderNewExperiment(); renderRail(); renderStages(); }
+}
+
+function renderLog() {
+  const groups = new Map([[null, []]]);
+  FOLDERS.forEach(f => groups.set(f.id, []));
+  LOG.forEach(e => groups.get(groups.has(e.folder_id) ? e.folder_id : null).push(e));
+
+  const item = (e) => {
+    const st = e.stage || "notice";
+    return `<div class="log-item ${EXP && e.id === EXP.id ? "on" : ""}" data-id="${e.id}">
+      <div class="t">${esc(e.title)}</div>
+      <div class="log-meta">
+        <span class="badge ${st}">${st}</span>
+        <span class="date">${e.created_at.slice(0, 10)}</span>
+        ${e.recording_count ? `<span class="date">${e.recording_count} voice</span>` : ""}
+      </div>
+    </div>`;
+  };
+
+  let html = "";
+  for (const f of FOLDERS) {
+    const items = groups.get(f.id) || [];
+    html += `<div class="folder-head"><span>${esc(f.name)}</span>
+      <button class="link" data-delf="${f.id}">remove</button></div>`;
+    html += items.length ? items.map(item).join("")
+      : `<div class="log-item" style="cursor:default"><span class="tiny muted">empty</span></div>`;
+  }
+  const loose = groups.get(null) || [];
+  if (loose.length) {
+    if (FOLDERS.length) html += `<div class="folder-head"><span>Unfiled</span></div>`;
+    html += loose.map(item).join("");
+  }
+  $("#log").innerHTML = html || `<div style="padding:16px" class="small muted">Nothing yet.</div>`;
+
+  $("#log").querySelectorAll(".log-item[data-id]").forEach(el =>
+    el.onclick = () => openExperiment(+el.dataset.id));
+  $("#log").querySelectorAll("[data-delf]").forEach(el => el.onclick = async (ev) => {
+    ev.stopPropagation();
+    await api(`/folders/${el.dataset.delf}`, "DELETE");
+    await refreshList();
+  });
+}
+
+function renderStages() {
+  const at = STAGE_ORDER.indexOf(stageOf(EXP));
+  $("#now-title").textContent = EXP ? EXP.title : "";
+  $("#stages").innerHTML = STAGE_ORDER.map((s, i) => {
+    const cls = i < at ? "done" : i === at ? "now" : "";
+    return `<div class="stage ${cls}"><span class="num">${pad2(i + 1)}</span>${s}</div>`;
+  }).join(`<span class="stage-arrow">&rarr;</span>`);
 }
 
 async function openExperiment(id) {
   EXP = await api(`/experiments/${id}`);
-  document.querySelectorAll(".src").forEach(el =>
+  document.querySelectorAll(".log-item[data-id]").forEach(el =>
     el.classList.toggle("on", +el.dataset.id === id));
   render();
+  renderStages();
   refreshRailData();
 }
 
@@ -70,34 +126,38 @@ async function refreshRailData() {
   renderRail();
 }
 
+async function reloadLog() {
+  LOG = await api(`/projects/${PROJECT.id}/experiments`);
+  renderLog();
+}
+
 function render() {
   const c = EXP.commitments[EXP.commitments.length - 1] || null;
   const ch = c && c.challenges[c.challenges.length - 1] || null;
   const resp = ch && ch.responses[ch.responses.length - 1] || null;
-  const step = (l, s) => `<div class="step ${s}">${l}</div>`;
   const ctx = Object.entries(EXP.context || {});
 
+  const banner = c
+    ? `<div class="banner">&#128275; Your view is committed. Challenge unlocked.</div>`
+    : `<div class="banner wait">&#128274; Write your own reading first. The challenge stays locked until you do.</div>`;
+
   $("#main").innerHTML = `
-    <div class="steps">
-      ${step("1 · Record", "done")}
-      ${step("2 · Commit your view", c ? "done" : "now")}
-      ${step("3 · Meet the argument", ch ? "done" : c ? "now" : "")}
-      ${step("4 · Decide", resp ? "done" : ch ? "now" : "")}
-    </div>
+    ${banner}
     <div class="card">
       <h2>${esc(EXP.title)}</h2>
-      <div class="muted small">${esc(EXP.question) || "<em>no question recorded</em>"}</div>
-      ${ctx.length ? `<div class="chips">${ctx.map(([k, v]) =>
-        `<span class="chip">${esc(k)}: <strong>${esc(v)}</strong></span>`).join("")}</div>` : ""}
-      <h3 style="margin-top:18px">Bench notes</h3>
+      ${EXP.question ? `<div class="qline"><b>Q:</b> ${esc(EXP.question)}</div>` : ""}
+      ${ctx.length ? `<div class="ctx">${ctx.map(([k, v]) =>
+        `<b>${esc(k)}:</b> ${esc(v)}`).join("&nbsp;&nbsp; ")}</div>` : ""}
+
+      <h3 style="margin-top:20px">Bench notes</h3>
       ${EXP.notes.length
-        ? EXP.notes.map(n => `<div class="small" style="margin-bottom:5px">
+        ? EXP.notes.map(n => `<div class="small" style="margin-bottom:6px">
             ${esc(n.body)}
-            <span class="muted tiny">${n.source === "voice" ? "dictated · " : ""}${n.created_at.slice(0, 10)}</span>
+            <span class="muted tiny">${n.source === "voice" ? "dictated, " : ""}${n.created_at.slice(0, 10)}</span>
           </div>`).join("")
         : `<div class="small muted">The things that decide whether it worked and never reach
            the spreadsheet. Consistency of a gel, a line that looked unhappy, beads sitting low.</div>`}
-      <div class="row" style="margin-top:9px">
+      <div class="row" style="margin-top:10px">
         <input id="note" placeholder="Add an observation…">
         <button class="ghost sm" id="btn-note">Add</button>
       </div>
@@ -105,9 +165,32 @@ function render() {
     ${renderLinkedPapers()}
     ${renderConnectorOutput()}
     ${c ? renderCommitment(c) : renderCommitForm()}
-    ${c ? (ch ? renderChallenge(ch, c, resp) : renderChallengeGate(c)) : ""}
+    ${c ? (ch ? renderChallenge(ch, c, resp) : renderChallengeGate()) : ""}
   `;
   wire(c, ch);
+}
+
+function renderCommitment(c) {
+  return `<div class="commitcard">
+    <div class="hd">
+      <span class="l">Your committed interpretation</span>
+      <span class="p">preserved</span>
+    </div>
+    <div style="font-size:15.5px;line-height:1.6">${esc(c.interpretation)}</div>
+    <div class="meter">
+      <div class="bar"><div class="fill" style="width:${c.confidence}%"></div></div>
+      <div class="v">${c.confidence}% confidence</div>
+    </div>
+    <dl style="margin:0">
+      <dt>Expected</dt><dd>${esc(c.expected)}</dd>
+      <dt>Observed</dt><dd>${esc(c.observed)}</dd>
+      <dt>Would change your mind</dt><dd>${esc(c.disconfirming)}</dd>
+      ${c.proposed_next ? `<dt>Next experiment you proposed</dt><dd>${esc(c.proposed_next)}</dd>` : ""}
+    </dl>
+    <div class="tiny muted" style="margin-top:16px">
+      Locked ${c.locked_at.replace("T", " ").slice(0, 16)}. Your words, unedited.
+    </div>
+  </div>`;
 }
 
 function renderLinkedPapers() {
@@ -116,13 +199,13 @@ function renderLinkedPapers() {
   return `<div class="card">
     <h3>Papers behind this experiment</h3>
     <p class="tiny muted" style="margin-top:-6px">Your own reading, from your Zotero library.
-    Attached for your reference; not passed to the challenge.</p>
+    Attached for your reference, not passed to the challenge.</p>
     ${ps.map(p => {
       const it = ZALL[p.zotero_key];
       return `<div class="paper">
         <div class="pt" data-openc="${esc(p.zotero_key)}">${esc(it ? it.title : p.zotero_key)}</div>
         ${it ? `<div class="pm">${esc(it.authors.join(", "))}${it.more_authors ? " et al." : ""}
-          ${it.date ? ` · ${esc(it.date)}` : ""}</div>` : ""}
+          ${it.date ? `, ${esc(it.date)}` : ""}</div>` : ""}
       </div>`;
     }).join("")}
   </div>`;
@@ -132,7 +215,7 @@ function renderConnectorOutput() {
   if (!EXP.connector_calls || !EXP.connector_calls.length) return "";
   return EXP.connector_calls.filter(cc => cc.ok).map(cc => `
     <div class="third-block">
-      <div class="who">${esc(cc.connector_name)}: your tool, not Benchcraft's</div>
+      <div class="who">${esc(cc.connector_name)}, your tool, not Benchcraft's</div>
       <div class="tiny muted" style="margin-bottom:7px">You asked: ${esc(cc.request)}</div>
       <div class="verbatim">${esc(cc.response)}</div>
       <div class="tiny muted" style="margin-top:7px">
@@ -170,20 +253,6 @@ function renderCommitForm() {
   </div>`;
 }
 
-function renderCommitment(c) {
-  return `<div class="locked">
-    <div class="stamp">Locked ${c.locked_at.replace("T", " ").slice(0, 16)}, your words, unedited</div>
-    <dl style="margin:0">
-      <dt>Expected</dt><dd>${esc(c.expected)}</dd>
-      <dt>Observed</dt><dd>${esc(c.observed)}</dd>
-      <dt>Your interpretation</dt><dd>${esc(c.interpretation)}</dd>
-      <dt>Confidence</dt><dd class="conf">${c.confidence}/100</dd>
-      <dt>Would change your mind</dt><dd>${esc(c.disconfirming)}</dd>
-      ${c.proposed_next ? `<dt>Next experiment you proposed</dt><dd>${esc(c.proposed_next)}</dd>` : ""}
-    </dl>
-  </div>`;
-}
-
 function renderChallengeGate() {
   return `<div class="card">
     <div class="gate">
@@ -201,50 +270,52 @@ function renderChallengeGate() {
 function renderChallenge(ch, c, resp) {
   const b = ch.blind, d = ch.divergence;
   return `
-  <div class="ai-block">
-    <div class="who">Generated blind: the model had not seen your interpretation</div>
-    ${b.explanations.map(e => `
-      <div class="hyp">
-        <div><span class="lab">${esc(e.label)}</span><span class="kind">${esc(e.kind)}</span></div>
-        <div class="small" style="margin-top:3px">${esc(e.statement)}</div>
-        ${ul(e.supports, "pro")}${ul(e.contradicts, "con")}
-        <div class="kill">Ruled out by: ${esc(e.would_rule_out)}</div>
-      </div>`).join("")}
-    <h3 style="margin-top:18px">Confounders this design allows</h3>
+  <div class="sect-label">Challenges</div>
+  ${b.explanations.map((e, i) => `
+    <div class="hypo">
+      <div class="n">Alternative hypothesis ${pad2(i + 1)} &middot; ${esc(e.kind)}</div>
+      <div class="body"><strong>${esc(e.label)}.</strong> ${esc(e.statement)}</div>
+      ${ul(e.supports, "pro")}${ul(e.contradicts, "con")}
+      <div class="kill">Ruled out by: ${esc(e.would_rule_out)}</div>
+    </div>`).join("")}
+
+  <div class="hypo">
+    <div class="n">What would distinguish these?</div>
+    <div class="body">${esc(b.discriminating_experiment.description)}
+      <span class="chip mini" style="margin-left:6px">${esc(b.discriminating_experiment.cost)}</span></div>
+    <div class="small muted" style="margin-top:7px">${esc(b.discriminating_experiment.reads_out)}</div>
+    <div class="sub">Confounders this design allows</div>
     ${(b.confounders || []).map(x =>
       `<div class="small" style="margin-bottom:5px"><strong>${esc(x.name)}</strong>: ${esc(x.why)}</div>`).join("")}
-    <h3 style="margin-top:16px">Controls missing from the record</h3>
+    <div class="sub">Controls missing from the record</div>
     ${ul(b.missing_controls, "con")}
-    <h3 style="margin-top:16px">Cheapest way to tell them apart</h3>
-    <div class="small">${esc(b.discriminating_experiment.description)}
-      <span class="chip" style="margin-left:5px">${esc(b.discriminating_experiment.cost)}</span></div>
-    <div class="small muted" style="margin-top:5px">${esc(b.discriminating_experiment.reads_out)}</div>
-    ${(b.record_is_silent_on || []).length ? `
-      <h3 style="margin-top:16px">Your record didn't say</h3>${ul(b.record_is_silent_on, "con")}` : ""}
+    ${(b.record_is_silent_on || []).length ? `<div class="sub">Your record didn't say</div>
+      ${ul(b.record_is_silent_on, "con")}` : ""}
   </div>
 
-  ${d ? `<div class="ai-block" style="border-left-color:var(--mine);background:#eef1f7">
-    <div class="who" style="color:var(--mine)">Where you and it diverge</div>
+  ${d ? `<div class="ai-block" style="border-left-color:var(--navy);background:#f4f3ee">
+    <div class="who" style="color:var(--navy)">Where you and it diverge</div>
     <div class="small"><strong>Your reading maps to:</strong> ${esc(d.matches)}</div>
     ${(d.they_saw_that_you_missed || []).length ? `
-      <h3 style="margin-top:15px">You saw what it did not</h3>${ul(d.they_saw_that_you_missed, "pro")}` : ""}
+      <div class="sub" style="color:var(--navy);border-top-color:var(--rule)">You saw what it did not</div>
+      ${ul(d.they_saw_that_you_missed, "pro")}` : ""}
     ${(d.you_raised_that_they_did_not_address || []).length ? `
-      <h3 style="margin-top:15px">It raised what you did not address</h3>
+      <div class="sub" style="color:var(--navy);border-top-color:var(--rule)">It raised what you did not address</div>
       ${ul(d.you_raised_that_they_did_not_address, "con")}` : ""}
-    <h3 style="margin-top:15px">Strongest alternative you left unexamined</h3>
+    <div class="sub" style="color:var(--navy);border-top-color:var(--rule)">Strongest alternative you left unexamined</div>
     <div class="small">${esc(d.strongest_unexamined_alternative)}</div>
     <div class="small muted" style="margin-top:4px"><em>To put it down:</em> ${esc(d.how_to_dismiss_it)}</div>
-    <h3 style="margin-top:15px">On your stated confidence of ${c.confidence}</h3>
+    <div class="sub" style="color:var(--navy);border-top-color:var(--rule)">On your stated confidence of ${c.confidence}</div>
     <div class="small">${esc(d.confidence_note)}</div>
   </div>` : ""}
 
   ${resp ? `<div class="locked">
-      <div class="stamp">You ${esc(resp.stance)} your position, confidence ${c.confidence} → ${resp.confidence_after}</div>
+      <div class="stamp">You ${esc(resp.stance)} your position. Confidence ${c.confidence} to ${resp.confidence_after}</div>
       <div>${esc(resp.reasoning)}</div>
-      ${resp.chosen_next ? `<dt style="font-weight:600;font-size:12.5px;margin-top:9px">Next</dt>
-        <dd style="margin:2px 0 0">${esc(resp.chosen_next)}</dd>` : ""}
+      ${resp.chosen_next ? `<div style="font-weight:600;font-size:12.5px;margin-top:9px">Next</div>
+        <div>${esc(resp.chosen_next)}</div>` : ""}
     </div>
-    <div class="card"><button class="ghost sm" id="btn-branch">Create the next experiment from this decision →</button></div>`
+    <div class="card"><button class="ghost sm" id="btn-branch">Create the next experiment from this decision</button></div>`
   : `<div class="card">
       <h3>Your decision</h3>
       <p class="small muted" style="margin-top:-4px">Holding your position is a legitimate answer,
@@ -268,14 +339,223 @@ function renderChallenge(ch, c, resp) {
 }
 
 function renderRail() {
-  if (TAB === "plain") return renderPlainRail();
+  if (TAB === "ref") return renderRefRail();
   if (TAB === "voice") return renderVoiceRail();
   if (TAB === "papers") return renderPapersRail();
   return renderConnRail();
 }
 
+function renderRefRail() {
+  const committed = EXP && EXP.commitments.length;
+  const shown = MATCHES;
+  $("#rail").innerHTML = `
+    <div class="ref-intro">
+      <div class="d">Definitions only. What a term denotes, never what your result means.
+      That part stays yours.</div>
+    </div>
+    <div class="ref-state ${committed ? "" : "wait"}">
+      ${committed
+        ? "Your view is committed. Sources and AI analysis are now visible."
+        : "Definitions are always available. AI interpretation stays locked until you commit."}
+    </div>
+    <div class="ref-body">
+      <div class="ref-count">${shown.length} term${shown.length === 1 ? "" : "s"} recognised</div>
+      <div class="chips">
+        ${shown.map(g => `<span class="chip" data-term="${esc(g.term)}">${esc(g.term)}</span>`).join("")}
+      </div>
+      <div id="def-detail" style="margin-top:16px"></div>
+      <div class="tiny muted" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--rule)">
+        Select any word in the middle pane to define it in the context of this experiment.
+      </div>
+      <button class="ghost sm" id="g-detect" style="margin-top:10px;width:100%">Scan this record for terms</button>
+      <div class="err tiny" id="g-err"></div>
+      <div style="margin-top:16px">
+        <h3>Add your own</h3>
+        <input id="g-term" placeholder="term" style="margin-bottom:5px">
+        <textarea id="g-plain" rows="2" placeholder="plain-language definition"></textarea>
+        <button class="ghost sm" id="g-add" style="margin-top:6px;width:100%">Add</button>
+      </div>
+      ${GLOSS.length > shown.length ? `<div class="tiny muted" style="margin-top:14px">
+        ${GLOSS.length - shown.length} more in the project glossary, not mentioned here.</div>` : ""}
+    </div>`;
+
+  $("#rail").querySelectorAll("[data-term]").forEach(el => el.onclick = () => {
+    $("#rail").querySelectorAll(".chip[data-term]").forEach(x => x.classList.remove("on"));
+    el.classList.add("on");
+    showDef(MATCHES.find(g => g.term === el.dataset.term)
+         || GLOSS.find(g => g.term === el.dataset.term));
+  });
+  $("#g-detect").onclick = async (e) => {
+    const b = e.target;
+    b.disabled = true; b.innerHTML = `<span class="spin">◐</span> reading…`;
+    try {
+      GLOSS = await api(`/projects/${PROJECT.id}/glossary/detect`, "POST");
+      MATCHES = await api(`/projects/${PROJECT.id}/glossary/matches/${EXP.id}`);
+      renderRail();
+    } catch (err) {
+      b.disabled = false; b.textContent = "Scan this record for terms";
+      $("#g-err").textContent = err.message;
+    }
+  };
+  $("#g-add").onclick = async () => {
+    const term = $("#g-term").value.trim(), plain = $("#g-plain").value.trim();
+    if (!term || !plain) return;
+    GLOSS = await api(`/projects/${PROJECT.id}/glossary`, "POST", { term, plain });
+    MATCHES = await api(`/projects/${PROJECT.id}/glossary/matches/${EXP.id}`);
+    renderRail();
+  };
+}
+
+function showDef(g) {
+  if (!g) return;
+  $("#def-detail").innerHTML = `<div class="def">
+    <div class="w">${esc(g.term)}<span class="src-tag">${esc(g.source)}</span></div>
+    <div class="d">${esc(g.plain)}</div>
+    <button class="link" style="margin-top:6px" data-del="${g.id}">remove</button>
+  </div>`;
+  const del = $("#def-detail").querySelector("[data-del]");
+  if (del) del.onclick = async () => {
+    GLOSS = await api(`/glossary/${del.dataset.del}`, "DELETE");
+    MATCHES = MATCHES.filter(m => m.id !== +del.dataset.del);
+    renderRail();
+  };
+}
+
+let SELTERM = "";
+document.addEventListener("mouseup", (e) => {
+  if (e.target.id === "selpop") return;
+  const sel = window.getSelection();
+  const text = (sel ? sel.toString() : "").trim();
+  const node = sel && sel.anchorNode;
+  const inMain = node && $("#main").contains(node.nodeType === 1 ? node : node.parentNode);
+  const words = text.split(/\s+/).length;
+  if (!text || !inMain || words > 5 || text.length < 2 || text.length > 80) {
+    $("#selpop").style.display = "none";
+    return;
+  }
+  SELTERM = text;
+  const r = sel.getRangeAt(0).getBoundingClientRect();
+  const pop = $("#selpop");
+  pop.style.display = "block";
+  pop.style.left = `${window.scrollX + r.left + r.width / 2 - pop.offsetWidth / 2}px`;
+  pop.style.top = `${window.scrollY + r.top - pop.offsetHeight - 8}px`;
+});
+
+$("#selpop").onclick = async () => {
+  const pop = $("#selpop");
+  const term = SELTERM;
+  pop.textContent = "…";
+  try {
+    const entry = await api(`/projects/${PROJECT.id}/glossary/define`, "POST",
+      { term, experiment_id: EXP ? EXP.id : null });
+    GLOSS = await api(`/projects/${PROJECT.id}/glossary`);
+    MATCHES = await api(`/projects/${PROJECT.id}/glossary/matches/${EXP.id}`);
+    TAB = "ref";
+    document.querySelectorAll(".tab").forEach(x =>
+      x.classList.toggle("on", x.dataset.tab === "ref"));
+    renderRail();
+    showDef(entry);
+  } catch (err) {
+    $("#def-detail") ? $("#def-detail").innerHTML =
+      `<div class="err">${esc(err.message)}</div>` : alert(err.message);
+  }
+  pop.textContent = "Define";
+  pop.style.display = "none";
+  window.getSelection().removeAllRanges();
+};
+
+function renderVoiceRail() {
+  const recs = (EXP && EXP.recordings) || [];
+  $("#rail").innerHTML = `<div class="ref-body">
+    <h3>Voice memos</h3>
+    <p class="tiny muted" style="margin-top:-5px">
+      Transcribed <strong>verbatim</strong> and stored as your words. Benchcraft does not
+      summarise a voice note, ever. A summary of a hunch is someone else's hunch.</p>
+    ${TSTATUS.ready
+      ? `<div class="tiny muted">Runs locally on this Mac: ${esc(TSTATUS.engine)}. Audio never leaves the machine.</div>`
+      : `<div class="tiny" style="color:#8d3b32">Local transcription not set up:<br>${
+          (TSTATUS.missing || []).map(m => esc(m)).join("<br>")}<br>
+          You can still upload and type the transcript yourself.</div>`}
+    <div class="drop" id="drop" style="margin-top:11px">
+      Drop an MP3 here, or click to choose<br>
+      <span class="tiny">mp3 &middot; m4a &middot; wav &middot; aac &middot; ogg &middot; flac</span>
+    </div>
+    <input type="file" id="file" accept="audio/*,video/mp4,video/quicktime" style="display:none">
+    <div class="err tiny" id="v-err"></div>
+    <div style="margin-top:13px">
+      ${recs.length ? recs.map(r => `
+        <div class="rec">
+          <div class="small" style="font-weight:500">${esc(r.filename)}</div>
+          <div class="tiny muted">${r.duration_s ? `${r.duration_s}s, ` : ""}${r.created_at.slice(0, 10)}</div>
+          <audio controls preload="none" src="/api/recordings/${r.id}/audio"></audio>
+          ${r.transcript
+            ? `<div class="verbatim">${esc(r.transcript)}</div>
+               <div class="tiny muted" style="margin-top:5px">${esc(r.transcript_engine)}</div>
+               <div class="row" style="margin-top:7px">
+                 <button class="ghost sm" data-note="${r.id}">Add to bench notes</button>
+                 <button class="link" data-edit="${r.id}">edit</button>
+               </div>`
+            : `<div class="row" style="margin-top:7px">
+                 <button class="ghost sm" data-tr="${r.id}" ${TSTATUS.ready ? "" : "disabled"}>Transcribe</button>
+                 <button class="link" data-edit="${r.id}">type it myself</button>
+               </div>`}
+        </div>`).join("")
+        : `<div class="small muted">Nothing recorded for this experiment.</div>`}
+    </div></div>`;
+
+  const drop = $("#drop"), file = $("#file");
+  drop.onclick = () => file.click();
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = (e) => {
+    e.preventDefault(); drop.classList.remove("over");
+    if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+  };
+  file.onchange = () => file.files[0] && upload(file.files[0]);
+
+  $("#rail").querySelectorAll("[data-tr]").forEach(el => el.onclick = async () => {
+    el.disabled = true; el.innerHTML = `<span class="spin">◐</span> transcribing…`;
+    try {
+      EXP = await api(`/recordings/${el.dataset.tr}/transcribe`, "POST");
+      render(); renderRail();
+    } catch (err) {
+      $("#v-err").textContent = err.message;
+      el.disabled = false; el.textContent = "Transcribe";
+    }
+  });
+  $("#rail").querySelectorAll("[data-note]").forEach(el => el.onclick = async () => {
+    const rec = recs.find(r => r.id === +el.dataset.note);
+    EXP = await api(`/experiments/${EXP.id}/notes`, "POST",
+      { body: rec.transcript, source: "voice", recording_id: rec.id });
+    render(); renderRail();
+  });
+  $("#rail").querySelectorAll("[data-edit]").forEach(el => el.onclick = () => {
+    const rec = recs.find(r => r.id === +el.dataset.edit);
+    $("#modal-body").innerHTML = `<h2>Transcript</h2>
+      <p class="small muted">Your words. Correct anything the machine misheard.</p>
+      <textarea id="t-edit" rows="10">${esc(rec.transcript)}</textarea>
+      <div style="margin-top:12px"><button id="t-save">Save</button></div>`;
+    modal.showModal();
+    $("#t-save").onclick = async () => {
+      EXP = await api(`/recordings/${rec.id}/transcript`, "PUT",
+        { transcript: $("#t-edit").value });
+      modal.close(); render(); renderRail();
+    };
+  });
+}
+
+async function upload(f) {
+  const fd = new FormData();
+  fd.append("file", f);
+  $("#v-err").textContent = "";
+  const r = await fetch(`/api/experiments/${EXP.id}/recordings`, { method: "POST", body: fd });
+  if (!r.ok) { $("#v-err").textContent = (await r.json()).detail || "Upload failed"; return; }
+  EXP = (await r.json()).experiment;
+  render(); renderRail(); reloadLog();
+}
+
 async function loadPapers() {
-  if (!ZSTATUS.ready) return;
+  if (!ZSTATUS.ready) return renderRail();
   const q = new URLSearchParams();
   if (ZFILTER.coll) q.set("collection", ZFILTER.coll);
   if (ZFILTER.engaged) q.set("engaged_only", "true");
@@ -288,14 +568,14 @@ async function loadPapers() {
 
 function renderPapersRail() {
   if (!ZSTATUS.ready) {
-    $("#rail").innerHTML = `<h3>Papers</h3>
+    $("#rail").innerHTML = `<div class="ref-body"><h3>Papers</h3>
       <div class="small" style="color:#8d3b32">${esc(ZSTATUS.detail || "Zotero not found.")}</div>
       <div class="tiny muted" style="margin-top:8px">Benchcraft reads your local Zotero library
-      directly. Nothing is uploaded and no account is connected.</div>`;
+      directly. Nothing is uploaded and no account is connected.</div></div>`;
     return;
   }
   const linked = new Set((EXP && EXP.papers || []).map(p => p.zotero_key));
-  $("#rail").innerHTML = `
+  $("#rail").innerHTML = `<div class="ref-body">
     <h3>From your library</h3>
     <p class="tiny muted" style="margin-top:-5px">Your own reading, available before you commit.
     These are the papers that got you here, so they belong to your judgement, not the AI's.</p>
@@ -312,18 +592,18 @@ function renderPapersRail() {
         <div class="paper">
           <div class="pt" data-open="${esc(it.key)}">${esc(it.title)}</div>
           <div class="pm">${esc(it.authors.join(", "))}${it.more_authors ? " et al." : ""}
-            ${it.date ? ` · ${esc(it.date)}` : ""}${it.journal ? ` · ${esc(it.journal)}` : ""}</div>
-          <div style="margin-top:5px">
+            ${it.date ? `, ${esc(it.date)}` : ""}${it.journal ? `, ${esc(it.journal)}` : ""}</div>
+          <div style="margin-top:6px">
             ${it.has_pdf ? `<span class="pill">pdf</span>` : ""}
             ${it.tags.length ? `<span class="pill">${it.tags.length} tags</span>` : ""}
             ${it.has_digest ? `<span class="pill on">digest</span>` : ""}
             ${it.has_my_note ? `<span class="pill mine">my note</span>` : ""}
-            ${EXP ? `<button class="link" style="margin-left:6px" data-link="${esc(it.key)}">${
+            ${EXP ? `<button class="link" data-link="${esc(it.key)}">${
               linked.has(it.key) ? "unlink" : "attach"}</button>` : ""}
           </div>
         </div>`).join("") : `<div class="small muted">Nothing matches.</div>`}
     </div>
-    <div class="err tiny" id="z-err"></div>`;
+    <div class="err tiny" id="z-err"></div></div>`;
 
   $("#z-coll").onchange = (e) => { ZFILTER.coll = e.target.value; loadPapers(); };
   $("#z-eng").onchange = (e) => { ZFILTER.engaged = e.target.checked; loadPapers(); };
@@ -341,20 +621,19 @@ function renderPapersRail() {
 async function openPaper(key) {
   $("#modal-body").innerHTML = `<p class="small muted"><span class="spin">◐</span> loading…</p>`;
   modal.showModal();
-  const p = await api(`/papers/${key}`);
-  drawPaper(p);
+  drawPaper(await api(`/papers/${key}`));
 }
 
 function drawPaper(p) {
   const it = p.item, d = p.digest;
   $("#modal-body").innerHTML = `
-    <h2 style="font-size:18px">${esc(it.title)}</h2>
+    <h2 style="font-size:19px">${esc(it.title)}</h2>
     <div class="small muted">${esc(it.authors.join(", "))}${it.more_authors ? " et al." : ""}
-      ${it.date ? ` · ${esc(it.date)}` : ""}${it.journal ? ` · ${esc(it.journal)}` : ""}</div>
+      ${it.date ? `, ${esc(it.date)}` : ""}${it.journal ? `, ${esc(it.journal)}` : ""}</div>
     ${it.doi ? `<div class="tiny"><a href="https://doi.org/${esc(it.doi)}" target="_blank"
       rel="noopener">doi.org/${esc(it.doi)}</a></div>` : ""}
     ${it.tags.length ? `<div class="chips">${it.tags.map(t =>
-      `<span class="chip">${esc(t)}</span>`).join("")}</div>` : ""}
+      `<span class="chip mini">${esc(t)}</span>`).join("")}</div>` : ""}
 
     <h3 style="margin-top:20px">My note</h3>
     <p class="tiny muted" style="margin-top:-6px">Yours. Written after you read it, not instead
@@ -366,13 +645,11 @@ function drawPaper(p) {
     <h3 style="margin-top:22px">What this paper did</h3>
     ${d ? `
       <div class="ai-block">
-        <div class="who">Digest · ${esc(d.source)}</div>
+        <div class="who">Digest, ${esc(d.source)}</div>
         <div class="small">${esc(d.main_claim)}</div>
-        ${d.experiments.length ? `<h3 style="margin-top:14px">Experiments</h3>
-          ${ul(d.experiments, "pro")}` : ""}
-        ${d.methods.length ? `<h3 style="margin-top:12px">Methods</h3>
-          ${ul(d.methods, "pro")}` : ""}
-        ${d.limitations.length ? `<h3 style="margin-top:12px">Limitations the authors state</h3>
+        ${d.experiments.length ? `<div class="sub">Experiments</div>${ul(d.experiments, "pro")}` : ""}
+        ${d.methods.length ? `<div class="sub">Methods</div>${ul(d.methods, "pro")}` : ""}
+        ${d.limitations.length ? `<div class="sub">Limitations the authors state</div>
           ${ul(d.limitations, "con")}` : ""}
         <div class="tiny muted" style="margin-top:12px">Describes what the authors did and claim.
         It will not tell you what this means for your experiment. That reading is yours.</div>
@@ -409,158 +686,16 @@ function drawPaper(p) {
   };
 }
 
-function renderPlainRail() {
-  const shown = MATCHES.length ? MATCHES : [];
-  $("#rail").innerHTML = `
-    <h3>In this experiment</h3>
-    <p class="tiny muted" style="margin-top:-5px">Definitions only. What a term denotes, never what
-    your result means. That part stays yours.</p>
-    ${shown.length
-      ? shown.map(g => `<div class="term">
-          <div class="w">${esc(g.term)}<span class="src-tag">${g.source}</span></div>
-          <div class="d">${esc(g.plain)}</div>
-          <button class="link" data-del="${g.id}">remove</button>
-        </div>`).join("")
-      : `<div class="small muted">No terms matched yet.</div>`}
-    <div style="margin-top:14px">
-      <button class="ghost sm" id="g-detect" style="width:100%">Find terms in this record</button>
-      <div class="tiny muted" style="margin-top:6px">Adds plain definitions for jargon it finds.
-      Every one is editable and deletable.</div>
-      <div class="err tiny" id="g-err"></div>
-    </div>
-    <div style="margin-top:14px">
-      <h3>Add your own</h3>
-      <input id="g-term" placeholder="term" style="margin-bottom:5px">
-      <textarea id="g-plain" rows="2" placeholder="plain-language definition"></textarea>
-      <button class="ghost sm" id="g-add" style="margin-top:6px;width:100%">Add</button>
-    </div>
-    ${GLOSS.length > shown.length ? `<div class="tiny muted" style="margin-top:14px">
-      ${GLOSS.length - shown.length} more term${GLOSS.length - shown.length > 1 ? "s" : ""}
-      in the project glossary, not mentioned here.</div>` : ""}`;
-
-  $("#rail").querySelectorAll("[data-del]").forEach(el => el.onclick = async () => {
-    GLOSS = await api(`/glossary/${el.dataset.del}`, "DELETE");
-    MATCHES = MATCHES.filter(m => m.id !== +el.dataset.del);
-    renderRail();
-  });
-  $("#g-detect").onclick = async (e) => {
-    const b = e.target;
-    b.disabled = true; b.innerHTML = `<span class="spin">◐</span> reading…`;
-    try {
-      GLOSS = await api(`/projects/${PROJECT.id}/glossary/detect`, "POST");
-      MATCHES = await api(`/projects/${PROJECT.id}/glossary/matches/${EXP.id}`);
-      renderRail();
-    } catch (err) {
-      b.disabled = false; b.textContent = "Find terms in this record";
-      $("#g-err").textContent = err.message;
-    }
-  };
-  $("#g-add").onclick = async () => {
-    const term = $("#g-term").value.trim(), plain = $("#g-plain").value.trim();
-    if (!term || !plain) return;
-    GLOSS = await api(`/projects/${PROJECT.id}/glossary`, "POST", { term, plain });
-    MATCHES = await api(`/projects/${PROJECT.id}/glossary/matches/${EXP.id}`);
-    renderRail();
-  };
-}
-
-function renderVoiceRail() {
-  const recs = (EXP && EXP.recordings) || [];
-  $("#rail").innerHTML = `
-    <h3>Voice memos</h3>
-    <p class="tiny muted" style="margin-top:-5px">
-      Transcribed <strong>verbatim</strong> and stored as your words. Benchcraft does not
-      summarise a voice note, ever. A summary of a hunch is someone else's hunch.</p>
-    ${TSTATUS.ready
-      ? `<div class="tiny muted">Runs locally on this Mac: ${esc(TSTATUS.engine)}. Audio never leaves the machine.</div>`
-      : `<div class="tiny" style="color:#8d3b32">Local transcription not set up:<br>${
-          TSTATUS.missing.map(m => `· ${esc(m)}`).join("<br>")}<br>
-          You can still upload and type the transcript yourself.</div>`}
-    <div class="drop" id="drop" style="margin-top:11px">
-      Drop an MP3 here, or click to choose<br>
-      <span class="tiny">mp3 · m4a · wav · aac · ogg · flac</span>
-    </div>
-    <input type="file" id="file" accept="audio/*,video/mp4,video/quicktime" style="display:none">
-    <div class="err tiny" id="v-err"></div>
-    <div style="margin-top:13px">
-      ${recs.length ? recs.map(r => `
-        <div class="rec">
-          <div class="small" style="font-weight:500">${esc(r.filename)}</div>
-          <div class="tiny muted">${r.duration_s ? `${r.duration_s}s · ` : ""}${r.created_at.slice(0, 10)}</div>
-          <audio controls preload="none" src="/api/recordings/${r.id}/audio"></audio>
-          ${r.transcript
-            ? `<div class="verbatim">${esc(r.transcript)}</div>
-               <div class="tiny muted" style="margin-top:5px">${esc(r.transcript_engine)}</div>
-               <div class="row" style="margin-top:7px">
-                 <button class="ghost sm" data-note="${r.id}">Add to bench notes</button>
-                 <button class="link" data-edit="${r.id}">edit</button>
-               </div>`
-            : `<div class="row" style="margin-top:7px">
-                 <button class="ghost sm" data-tr="${r.id}" ${TSTATUS.ready ? "" : "disabled"}>Transcribe</button>
-                 <button class="link" data-edit="${r.id}">type it myself</button>
-               </div>`}
-        </div>`).join("")
-        : `<div class="small muted">Nothing recorded for this experiment.</div>`}
-    </div>`;
-
-  const drop = $("#drop"), file = $("#file");
-  drop.onclick = () => file.click();
-  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
-  drop.ondragleave = () => drop.classList.remove("over");
-  drop.ondrop = (e) => {
-    e.preventDefault(); drop.classList.remove("over");
-    if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
-  };
-  file.onchange = () => file.files[0] && upload(file.files[0]);
-
-  $("#rail").querySelectorAll("[data-tr]").forEach(el => el.onclick = async () => {
-    el.disabled = true; el.innerHTML = `<span class="spin">◐</span> transcribing…`;
-    try {
-      EXP = await api(`/recordings/${el.dataset.tr}/transcribe`, "POST");
-      render(); renderRail();
-    } catch (err) { $("#v-err").textContent = err.message; el.disabled = false; el.textContent = "Transcribe"; }
-  });
-  $("#rail").querySelectorAll("[data-note]").forEach(el => el.onclick = async () => {
-    const rec = recs.find(r => r.id === +el.dataset.note);
-    EXP = await api(`/experiments/${EXP.id}/notes`, "POST",
-      { body: rec.transcript, source: "voice", recording_id: rec.id });
-    render(); renderRail();
-  });
-  $("#rail").querySelectorAll("[data-edit]").forEach(el => el.onclick = () => {
-    const rec = recs.find(r => r.id === +el.dataset.edit);
-    $("#modal-body").innerHTML = `<h2>Transcript</h2>
-      <p class="small muted">Your words. Correct anything the machine misheard.</p>
-      <textarea id="t-edit" rows="10">${esc(rec.transcript)}</textarea>
-      <div style="margin-top:12px"><button id="t-save">Save</button></div>`;
-    modal.showModal();
-    $("#t-save").onclick = async () => {
-      EXP = await api(`/recordings/${rec.id}/transcript`, "PUT",
-        { transcript: $("#t-edit").value });
-      modal.close(); render(); renderRail();
-    };
-  });
-}
-
-async function upload(f) {
-  const fd = new FormData();
-  fd.append("file", f);
-  $("#v-err").textContent = "";
-  const r = await fetch(`/api/experiments/${EXP.id}/recordings`, { method: "POST", body: fd });
-  if (!r.ok) { $("#v-err").textContent = (await r.json()).detail || "Upload failed"; return; }
-  EXP = (await r.json()).experiment;
-  render(); renderRail();
-}
-
 function renderConnRail() {
-  $("#rail").innerHTML = `
+  $("#rail").innerHTML = `<div class="ref-body">
     <h3>Your tools</h3>
     <p class="tiny muted" style="margin-top:-5px">Accounts and agents you bring. Their output is
-    shown as a third voice, attributed and separate, never merged into your commitment, never
+    shown as a third voice, attributed and separate, never merged into your commitment and never
     fed to the challenger.</p>
     ${CONNS.length ? CONNS.map(c => `
       <div class="conn">
         <div class="small" style="font-weight:600">${esc(c.name)}</div>
-        <div class="tiny muted">${esc(c.endpoint || "no endpoint set")}${c.key_env ? ` · ${esc(c.key_env)}` : ""}</div>
+        <div class="tiny muted">${esc(c.endpoint || "no endpoint set")}${c.key_env ? `, ${esc(c.key_env)}` : ""}</div>
         ${c.note ? `<div class="tiny muted" style="margin-top:4px">${esc(c.note)}</div>` : ""}
         <div class="row" style="margin-top:7px">
           ${c.enabled && c.endpoint
@@ -577,13 +712,9 @@ function renderConnRail() {
       <input id="c-key" placeholder="env var holding the key (optional)" style="margin-bottom:5px">
       <label style="margin:6px 0 4px"><input type="checkbox" id="c-on" style="width:auto"> enabled</label>
       <button class="ghost sm" id="c-add" style="width:100%">Add</button>
-      <div class="tiny muted" style="margin-top:7px">Benchcraft POSTs
-        <code>{question, experiment}</code> as JSON and shows whatever text comes back.</div>
     </div>
-    <div style="margin-top:14px">
-      <h3>Suggested</h3>
-      <div id="c-sugg" class="tiny muted">…</div>
-    </div>`;
+    <div style="margin-top:14px"><h3>Suggested</h3>
+      <div id="c-sugg" class="tiny muted">…</div></div></div>`;
 
   api("/connectors/suggested").then(s => {
     $("#c-sugg").innerHTML = s.map((x, i) => `
@@ -623,20 +754,20 @@ function renderConnRail() {
 }
 
 function wire(c, ch) {
+  $("#main").querySelectorAll("[data-openc]").forEach(el =>
+    el.onclick = () => openPaper(el.dataset.openc));
+
   const conf = $("#f-confidence");
   if (conf) conf.oninput = () => $("#conflabel").textContent = conf.value;
   const rconf = $("#r-confidence");
   if (rconf) rconf.oninput = () => $("#r-conflabel").textContent = rconf.value;
-
-  $("#main").querySelectorAll("[data-openc]").forEach(el =>
-    el.onclick = () => openPaper(el.dataset.openc));
 
   const note = $("#btn-note");
   if (note) note.onclick = async () => {
     const body = $("#note").value.trim();
     if (!body) return;
     EXP = await api(`/experiments/${EXP.id}/notes`, "POST", { body });
-    render();
+    render(); refreshRailData();
   };
 
   const lock = $("#btn-lock");
@@ -652,7 +783,7 @@ function wire(c, ch) {
         proposed_next: $("#f-next").value.trim(),
       });
       EXP = out.experiment;
-      render();
+      render(); renderStages(); renderRail(); reloadLog();
     } catch (e) { lock.disabled = false; $("#lock-err").textContent = e.message; }
   };
 
@@ -660,8 +791,10 @@ function wire(c, ch) {
   if (btnCh) btnCh.onclick = async () => {
     btnCh.disabled = true;
     btnCh.innerHTML = `<span class="spin">◐</span> thinking against you…`;
-    try { EXP = await api(`/commitments/${c.id}/challenge`, "POST"); render(); }
-    catch (e) {
+    try {
+      EXP = await api(`/commitments/${c.id}/challenge`, "POST");
+      render(); renderStages(); reloadLog();
+    } catch (e) {
       btnCh.disabled = false; btnCh.textContent = "Now let it be challenged";
       $("#ch-err").textContent = e.message;
     }
@@ -677,7 +810,7 @@ function wire(c, ch) {
         confidence_after: +$("#r-confidence").value,
         chosen_next: $("#r-next").value.trim(),
       });
-      render();
+      render(); renderStages(); reloadLog();
     } catch (e) { btnR.disabled = false; $("#r-err").textContent = e.message; }
   };
 
@@ -691,7 +824,7 @@ function renderNewExperiment(parentId) {
     <div class="ctx-row">
       <input placeholder="variable" value="${esc(CTX[i][0])}" data-k="${i}">
       <input placeholder="value" value="${esc(CTX[i][1])}" data-v="${i}">
-      <button class="ghost sm" data-x="${i}">×</button>
+      <button class="ghost sm" data-x="${i}">&times;</button>
     </div>`).join("");
 
   $("#main").innerHTML = `<div class="card">
@@ -702,6 +835,10 @@ function renderNewExperiment(parentId) {
     <label>What question is this asking?
       <span class="hint">The question, not the technique.</span></label>
     <textarea id="n-question" rows="2"></textarea>
+    ${FOLDERS.length ? `<label>Folder</label>
+      <select id="n-folder"><option value="">Unfiled</option>
+        ${FOLDERS.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join("")}
+      </select>` : ""}
     <label>Experimental context
       <span class="hint">Every variable here is one the challenge can reason about as a
       confounder, so record the boring ones: batch, lot, passage.</span></label>
@@ -724,10 +861,12 @@ function renderNewExperiment(parentId) {
   $("#n-save").onclick = async () => {
     const title = $("#n-title").value.trim();
     if (!title) { $("#n-err").textContent = "A title, at least."; return; }
+    const fsel = $("#n-folder");
     const created = await api(`/projects/${PROJECT.id}/experiments`, "POST", {
       title, question: $("#n-question").value.trim(),
       context: Object.fromEntries(CTX.filter(([k, v]) => k.trim() && v.trim())),
       parent_experiment_id: parentId || null,
+      folder_id: fsel && fsel.value ? +fsel.value : null,
     });
     EXP = created;
     await refreshList(created.id);
@@ -742,6 +881,13 @@ document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
 });
 
 $("#btn-new").onclick = () => renderNewExperiment();
+
+$("#btn-folder").onclick = async () => {
+  const name = prompt("Folder name, for example a protocol you run repeatedly:");
+  if (!name) return;
+  FOLDERS = await api(`/projects/${PROJECT.id}/folders`, "POST", { name });
+  renderLog();
+};
 
 $("#btn-brief").onclick = async () => {
   $("#modal-body").innerHTML = `<h2>Supervisor brief</h2>
@@ -766,12 +912,12 @@ $("#btn-graph").onclick = async () => {
   g.nodes.forEach(n => (byParent[n.parent || 0] ||= []).push(n));
   const draw = (pid, depth) => (byParent[pid] || []).map(n => {
     const move = n.confidence_after != null && n.confidence_after !== n.confidence
-      ? ` <span class="chip">${n.confidence} → ${n.confidence_after}</span>` : "";
+      ? ` <span class="chip mini">${n.confidence} to ${n.confidence_after}</span>` : "";
     return `<div style="margin-left:${depth * 20}px;padding:7px 0;${depth ? "border-left:1px solid var(--rule);padding-left:13px" : ""}">
       <strong>${esc(n.title)}</strong>${n.confidence != null
         ? ` <span class="conf muted small">confidence ${n.confidence}</span>` : ""}${move}
-      ${n.stance ? ` <span class="chip">${esc(n.stance)}</span>` : ""}
-      ${!n.challenged ? ` <span class="chip">unchallenged</span>` : ""}
+      ${n.stance ? ` <span class="chip mini">${esc(n.stance)}</span>` : ""}
+      ${!n.challenged ? ` <span class="chip mini">unchallenged</span>` : ""}
     </div>${draw(n.id, depth + 1)}`;
   }).join("");
 
@@ -791,7 +937,7 @@ $("#btn-graph").onclick = async () => {
       : `<div class="small muted">Nothing resolved yet. Mark commitments held or overturned once
          you know, and this becomes a calibration curve.</div>`}
     ${stances.length ? `<h3 style="margin-top:18px">After being challenged</h3>
-      <div class="small">${stances.map(([s, n]) => `${s}: ${n}`).join(" · ")}.
+      <div class="small">${stances.map(([s, n]) => `${s}: ${n}`).join(", ")}
       <span class="muted">Never moving is stubbornness; always moving is deference.</span></div>` : ""}`;
   modal.showModal();
 };

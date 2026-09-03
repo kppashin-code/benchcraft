@@ -31,6 +31,7 @@ class ExperimentIn(BaseModel):
     question: str = ""
     context: dict[str, str] = Field(default_factory=dict)
     parent_experiment_id: int | None = None
+    folder_id: int | None = None
 
 
 class NoteIn(BaseModel):
@@ -77,6 +78,15 @@ class ConnectorIn(BaseModel):
     enabled: bool = False
 
 
+class DefineIn(BaseModel):
+    term: str
+    experiment_id: int | None = None
+
+
+class FolderIn(BaseModel):
+    name: str
+
+
 class PaperNoteIn(BaseModel):
     body: str
 
@@ -106,15 +116,32 @@ def create_project(body: ProjectIn):
 
 @app.get("/api/projects/{project_id}/experiments")
 def list_experiments(project_id: int):
-    return db.rows(
+    out = db.rows(
         """SELECT e.*,
                   (SELECT COUNT(*) FROM commitments c WHERE c.experiment_id = e.id)
                       AS commitment_count,
                   (SELECT COUNT(*) FROM recordings r WHERE r.experiment_id = e.id)
-                      AS recording_count
+                      AS recording_count,
+                  (SELECT COUNT(*) FROM challenges ch
+                     JOIN commitments c2 ON c2.id = ch.commitment_id
+                    WHERE c2.experiment_id = e.id) AS challenge_count,
+                  (SELECT COUNT(*) FROM responses r2
+                     JOIN challenges ch2 ON ch2.id = r2.challenge_id
+                     JOIN commitments c3 ON c3.id = ch2.commitment_id
+                    WHERE c3.experiment_id = e.id) AS response_count
            FROM experiments e WHERE e.project_id = ? ORDER BY e.created_at DESC""",
         (project_id,),
     )
+    for e in out:
+        if e["response_count"]:
+            e["stage"] = "decide"
+        elif e["challenge_count"]:
+            e["stage"] = "challenge"
+        elif e["commitment_count"]:
+            e["stage"] = "commit"
+        else:
+            e["stage"] = "notice"
+    return out
 
 
 @app.post("/api/projects/{project_id}/experiments")
@@ -123,9 +150,9 @@ def create_experiment(project_id: int, body: ExperimentIn):
         raise HTTPException(404, "No such project")
     eid = db.insert(
         """INSERT INTO experiments
-           (project_id, parent_experiment_id, title, question, context_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (project_id, body.parent_experiment_id, body.title, body.question,
+           (project_id, parent_experiment_id, folder_id, title, question, context_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (project_id, body.parent_experiment_id, body.folder_id, body.title, body.question,
          json.dumps(body.context), db.now()),
     )
     return db.experiment_bundle(eid)
@@ -415,6 +442,77 @@ def call_connector(connector_id: int, body: ConnectorCallIn):
     if not ok:
         raise HTTPException(502, text)
     return db.experiment_bundle(body.experiment_id)
+
+
+@app.post("/api/projects/{project_id}/glossary/define")
+def define_term(project_id: int, body: DefineIn):
+    term = body.term.strip()
+    if not term or len(term) > 80:
+        raise HTTPException(422, "Select a word or short phrase.")
+    existing = db.row(
+        "SELECT * FROM glossary WHERE project_id = ? AND LOWER(term) = LOWER(?)",
+        (project_id, term),
+    )
+    if existing:
+        return existing
+    context = ""
+    if body.experiment_id:
+        exp = db.experiment_bundle(body.experiment_id)
+        if exp:
+            context = db.experiment_text(exp)
+    try:
+        entry = llm.define_term(term, context)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    db.execute(
+        """INSERT INTO glossary (project_id, term, plain, source, created_at)
+           VALUES (?, ?, ?, 'ai', ?)
+           ON CONFLICT (project_id, term) DO UPDATE SET plain = excluded.plain""",
+        (project_id, entry["term"].strip() or term, entry["plain"].strip(), db.now()),
+    )
+    return db.row(
+        "SELECT * FROM glossary WHERE project_id = ? AND LOWER(term) = LOWER(?)",
+        (project_id, entry["term"].strip() or term),
+    )
+
+
+@app.get("/api/projects/{project_id}/folders")
+def list_folders(project_id: int):
+    return db.rows(
+        """SELECT f.*, (SELECT COUNT(*) FROM experiments e WHERE e.folder_id = f.id) AS n
+           FROM folders f WHERE f.project_id = ? ORDER BY f.name""",
+        (project_id,),
+    )
+
+
+@app.post("/api/projects/{project_id}/folders")
+def create_folder(project_id: int, body: FolderIn):
+    if not body.name.strip():
+        raise HTTPException(422, "A name, at least.")
+    db.insert(
+        "INSERT INTO folders (project_id, name, created_at) VALUES (?, ?, ?)",
+        (project_id, body.name.strip(), db.now()),
+    )
+    return list_folders(project_id)
+
+
+@app.delete("/api/folders/{folder_id}")
+def delete_folder(folder_id: int):
+    f = db.row("SELECT * FROM folders WHERE id = ?", (folder_id,))
+    if not f:
+        raise HTTPException(404, "No such folder")
+    db.execute("UPDATE experiments SET folder_id = NULL WHERE folder_id = ?", (folder_id,))
+    db.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+    return list_folders(f["project_id"])
+
+
+@app.put("/api/experiments/{experiment_id}/folder")
+def set_folder(experiment_id: int, body: dict):
+    fid = body.get("folder_id")
+    if not db.row("SELECT id FROM experiments WHERE id = ?", (experiment_id,)):
+        raise HTTPException(404, "No such experiment")
+    db.execute("UPDATE experiments SET folder_id = ? WHERE id = ?", (fid, experiment_id))
+    return db.experiment_bundle(experiment_id)
 
 
 @app.get("/api/zotero/status")

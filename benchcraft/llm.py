@@ -9,11 +9,34 @@ MODEL = os.environ.get("BENCHCRAFT_MODEL", "claude-opus-5")
 _client: anthropic.Anthropic | None = None
 
 
+NO_KEY = (
+    "No Anthropic API key. Everything else in Benchcraft works without one; only the "
+    "challenge, the definitions and the brief call out. Set ANTHROPIC_API_KEY and restart."
+)
+
+
 def client() -> anthropic.Anthropic:
     global _client
     if _client is None:
         _client = anthropic.Anthropic()
     return _client
+
+
+def _call(fn, *a, **kw):
+    try:
+        return fn(*a, **kw)
+    except TypeError as e:
+        if "authentication" in str(e).lower():
+            raise RuntimeError(NO_KEY)
+        raise
+    except anthropic.AuthenticationError:
+        raise RuntimeError("Your ANTHROPIC_API_KEY was rejected.")
+    except anthropic.RateLimitError:
+        raise RuntimeError("Rate limited by the API. Wait a moment and try again.")
+    except anthropic.APIConnectionError:
+        raise RuntimeError("Could not reach the API. Check your connection.")
+    except anthropic.APIStatusError as e:
+        raise RuntimeError(f"API error {e.status_code}. Nothing was saved.")
 
 
 class Explanation(BaseModel):
@@ -195,6 +218,8 @@ dopamine synthesis'. It is NOT 'a marker of mature dopaminergic identity, so \
 lower TH suggests impaired maturation'. The second sentence is the researcher's \
 to write, not yours.
 
+Never use an em dash. Use a comma, a semicolon or a full stop instead.
+
 Skip anything a general reader already understands. Skip terms you cannot \
 define confidently rather than guessing. UK spelling."""
 
@@ -282,7 +307,8 @@ def _record_text(exp: dict, commitment: dict, include_interpretation: bool) -> s
 
 
 def _parse(system: str, user: str, schema: type[BaseModel]) -> BaseModel:
-    resp = client().messages.parse(
+    resp = _call(
+        client().messages.parse,
         model=MODEL,
         max_tokens=16000,
         system=system,
@@ -311,6 +337,22 @@ def divergence(exp: dict, commitment: dict, blind: dict) -> dict:
         ]
     )
     return _parse(DIVERGENCE_SYSTEM, user, Divergence).model_dump()
+
+
+def define_term(term: str, context: str) -> dict:
+    user = (
+        f"TERM TO DEFINE: {term}\n\n"
+        "THE RECORD IT APPEARS IN, so you pick the right sense of the word. Do not describe "
+        "this experiment, do not comment on it, and do not mention it in your definition:\n"
+        + (context[:6000] or "(no surrounding record)")
+    )
+    out = _parse(GLOSSARY_SYSTEM, user, GlossaryOut)
+    for e in out.entries:
+        if e.term.strip().lower() == term.strip().lower():
+            return e.model_dump()
+    return out.entries[0].model_dump() if out.entries else {
+        "term": term, "plain": "No confident definition."
+    }
 
 
 def glossary_terms(text: str, known: list[str]) -> list[dict]:
@@ -366,7 +408,8 @@ def supervisor_brief(project: dict, experiments: list[dict]) -> str:
         f"PROJECT: {project['name']}\n{project['description']}\n\n"
         "=== THE RECORD ===\n\n" + "\n\n---\n\n".join(blocks)
     )
-    resp = client().messages.create(
+    resp = _call(
+        client().messages.create,
         model=MODEL,
         max_tokens=8000,
         system=BRIEF_SYSTEM,

@@ -17,9 +17,17 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS folders (
+    id         INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS experiments (
     id                   INTEGER PRIMARY KEY,
     project_id           INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    folder_id            INTEGER REFERENCES folders(id) ON DELETE SET NULL,
     parent_experiment_id INTEGER REFERENCES experiments(id),
     title                TEXT NOT NULL,
     question             TEXT NOT NULL DEFAULT '',
@@ -167,6 +175,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(notes)").fetchall()}
     if cols and "recording_id" not in cols:
         conn.execute("ALTER TABLE notes ADD COLUMN recording_id INTEGER REFERENCES recordings(id)")
+    ecols = {r["name"] for r in conn.execute("PRAGMA table_info(experiments)").fetchall()}
+    if ecols and "folder_id" not in ecols:
+        conn.execute("ALTER TABLE experiments ADD COLUMN folder_id INTEGER REFERENCES folders(id)")
 
 
 def init() -> None:
