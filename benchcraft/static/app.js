@@ -277,6 +277,7 @@ function render() {
     ${renderConnectorOutput()}
     ${c ? renderCommitment(c) : renderCommitForm()}
     ${c ? (ch ? renderChallenge(ch, c, resp) : renderChallengeGate()) : ""}
+    ${c ? renderResolution(c, resp) : ""}
   `;
   wire(c, ch);
 }
@@ -561,6 +562,42 @@ function renderChallenge(ch, c, resp) {
       <div style="margin-top:15px"><button id="btn-respond">Record decision</button></div>
       <div class="err" id="r-err"></div>
     </div>`}`;
+}
+
+function renderResolution(c, resp) {
+  const r = c.resolution;
+  const settled = r && r.verdict !== "unresolved";
+  if (settled) {
+    const words = { held: "held up", partly: "partly held up", overturned: "was overturned" };
+    return `<div class="locked">
+      <div class="stamp">How it turned out</div>
+      <div>Your interpretation ${esc(words[r.verdict] || r.verdict)}.
+        You were ${c.confidence}/100 confident.</div>
+      ${r.notes ? `<div class="small muted" style="margin-top:6px">${esc(r.notes)}</div>` : ""}
+      <div class="tiny muted" style="margin-top:8px">Recorded ${r.created_at.slice(0, 10)}.
+        This is what the calibration score is computed from.</div>
+    </div>`;
+  }
+  const days = (Date.now() - Date.parse(c.locked_at)) / 86400000;
+  if (!resp && !r && days < 3) return "";
+  return `<div class="card">
+    <h3>How did it turn out?</h3>
+    <p class="small muted" style="margin-top:-4px">Come back to this when you know, which may be
+    weeks. Nothing else in Benchcraft can tell you whether you were right, so this is the only
+    place your calibration comes from.
+    ${r ? "You marked this unresolved before." : ""}</p>
+    <label>Verdict</label>
+    <select id="v-verdict">
+      <option value="held">My interpretation held</option>
+      <option value="partly">It partly held</option>
+      <option value="overturned">It was overturned</option>
+      <option value="unresolved" ${r ? "selected" : ""}>Still don't know</option>
+    </select>
+    <label>What settled it? <span class="hint">Optional, but your future self will want it.</span></label>
+    <textarea id="v-notes" rows="2">${r ? esc(r.notes) : ""}</textarea>
+    <div style="margin-top:14px"><button id="btn-verdict">Record outcome</button></div>
+    <div class="err" id="v-err"></div>
+  </div>`;
 }
 
 function renderRail() {
@@ -1089,6 +1126,18 @@ function wire(c, ch) {
     } catch (e) { btnR.disabled = false; $("#r-err").textContent = e.message; }
   };
 
+  const verdict = $("#btn-verdict");
+  if (verdict) verdict.onclick = async () => {
+    try {
+      verdict.disabled = true;
+      EXP = await api(`/commitments/${c.id}/resolution`, "POST", {
+        verdict: $("#v-verdict").value,
+        notes: $("#v-notes").value.trim(),
+      });
+      render(); reloadLog();
+    } catch (e) { verdict.disabled = false; $("#v-err").textContent = e.message; }
+  };
+
   const branch = $("#btn-branch");
   if (branch) branch.onclick = () => renderNewExperiment(EXP.id);
 }
@@ -1229,6 +1278,7 @@ $("#btn-graph").onclick = async () => {
   }).join("");
 
   const stances = Object.entries(cal.stance_counts || {});
+  const pending = g.awaiting_verdict || [];
   $("#modal-body").innerHTML = `<h2>Decision graph</h2>
     <p class="small muted">Every branch is a question you chose to follow, and the ones beside it
     that you did not.</p>
@@ -1245,7 +1295,19 @@ $("#btn-graph").onclick = async () => {
          you know, and this becomes a calibration curve.</div>`}
     ${stances.length ? `<h3 style="margin-top:18px">After being challenged</h3>
       <div class="small">${stances.map(([s, n]) => `${s}: ${n}`).join(", ")}
-      <span class="muted">Never moving is stubbornness; always moving is deference.</span></div>` : ""}`;
+      <span class="muted">Never moving is stubbornness; always moving is deference.</span></div>` : ""}
+    ${pending.length ? `<h3 style="margin-top:22px">Awaiting a verdict</h3>
+      <p class="tiny muted" style="margin-top:-6px">Calibration only counts calls whose outcome
+      you have recorded. These are still open.</p>
+      ${pending.map(x => `<div class="small" style="padding:4px 0">
+        <button class="link" data-goto="${x.commitment_id}">${esc(x.title)}</button>
+        <span class="muted">stated ${x.confidence}</span>
+      </div>`).join("")}` : ""}`;
+  $("#modal-body").querySelectorAll("[data-goto]").forEach(el => el.onclick = async () => {
+    const node = g.nodes.find(n => n.commitment_id === +el.dataset.goto);
+    modal.close();
+    if (node) await openExperiment(node.id);
+  });
   modal.showModal();
 };
 

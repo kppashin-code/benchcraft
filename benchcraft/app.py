@@ -763,6 +763,7 @@ def decision_graph(project_id: int):
                 after = resps[-1]["confidence_after"]
         nodes.append({
             "id": e["id"],
+            "commitment_id": last["id"] if last else None,
             "title": e["title"],
             "parent": e["parent_experiment_id"],
             "confidence": last["confidence"] if last else None,
@@ -771,8 +772,18 @@ def decision_graph(project_id: int):
             "challenged": bool(last and last["challenges"]),
             "resolution": (last or {}).get("resolution") or None,
         })
-    return {"nodes": nodes, "edges": [{"from": n["parent"], "to": n["id"]}
-                                     for n in nodes if n["parent"]]}
+    pending = [
+        {"commitment_id": n["commitment_id"], "title": n["title"],
+         "confidence": n["confidence"]}
+        for n in nodes
+        if n["commitment_id"]
+        and (not n["resolution"] or n["resolution"]["verdict"] == "unresolved")
+    ]
+    return {
+        "nodes": nodes,
+        "edges": [{"from": n["parent"], "to": n["id"]} for n in nodes if n["parent"]],
+        "awaiting_verdict": pending,
+    }
 
 
 @app.get("/api/projects/{project_id}/calibration")
