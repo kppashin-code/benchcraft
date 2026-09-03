@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import connectors, db, llm, transcribe, zotero
+from . import connectors, db, literature, llm, transcribe, zotero
 
 app = FastAPI(title="Benchcraft")
 STATIC = Path(__file__).resolve().parent / "static"
@@ -77,6 +77,12 @@ class ConnectorIn(BaseModel):
     key_env: str = ""
     note: str = ""
     enabled: bool = False
+
+
+class SearchIn(BaseModel):
+    query: str
+    include_preprints: bool = False
+    reviews_only: bool = False
 
 
 class InkIn(BaseModel):
@@ -626,6 +632,31 @@ def suggestions(project_id: int):
         "SELECT term FROM glossary WHERE project_id = ? ORDER BY term", (project_id,))]
 
     return {"context_keys": ordered_keys, "context_values": values, "terms": terms}
+
+
+@app.get("/api/experiments/{experiment_id}/literature/suggest")
+def suggest_literature_query(experiment_id: int):
+    exp = db.experiment_bundle(experiment_id)
+    if not exp:
+        raise HTTPException(404, "No such experiment")
+    terms = [g["term"] for g in glossary_matches(exp["project_id"], experiment_id)]
+    return {"query": literature.suggest_query(exp, terms)}
+
+
+@app.post("/api/literature/search")
+def search_literature(body: SearchIn):
+    try:
+        out = literature.search(
+            body.query, include_preprints=body.include_preprints,
+            reviews_only=body.reviews_only,
+        )
+    except literature.LookupError_ as e:
+        raise HTTPException(502, str(e))
+    have = {i["doi"].lower() for i in (zotero.items() if zotero.status()["ready"] else [])
+            if i.get("doi")}
+    for r in out["results"]:
+        r["in_my_library"] = bool(r["doi"]) and r["doi"].lower() in have
+    return out
 
 
 @app.get("/api/zotero/status")

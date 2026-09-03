@@ -21,6 +21,7 @@ let GLOSS = [], MATCHES = [], CONNS = [], FOLDERS = [], LOG = [];
 let TSTATUS = { ready: false, missing: [] };
 let ZSTATUS = { ready: false }, ZCOLLS = [], ZITEMS = [], ZALL = {};
 let ZFILTER = { coll: "", engaged: true };
+let LIT = { query: "", results: [], used: "", dropped: [], preprints: false, reviews: false, ran: false };
 let SUGG = { context_keys: [], context_values: {}, terms: [] };
 let POLL = null;
 let PEN = { open: false, colour: "#021C45", size: 2.2, erase: false, strokes: [] };
@@ -910,7 +911,46 @@ function renderPapersRail() {
           </div>
         </div>`).join("") : `<div class="small muted">Nothing matches.</div>`}
     </div>
-    <div class="err tiny" id="z-err"></div></div>`;
+    <div class="err tiny" id="z-err"></div>
+
+    <div style="margin-top:22px;padding-top:16px;border-top:1px solid var(--rule)">
+      <h3>From the field</h3>
+      <p class="tiny muted" style="margin-top:-5px">How other people have handled this. Europe PMC,
+      peer reviewed by default. Your own query, so nothing about your experiment is sent unless
+      you put it there.</p>
+      <textarea id="lit-q" rows="2" placeholder="search terms">${esc(LIT.query)}</textarea>
+      <label style="margin:7px 0 3px;font-weight:400;font-size:12px">
+        <input type="checkbox" id="lit-pp" ${LIT.preprints ? "checked" : ""} style="width:auto">
+        include preprints</label>
+      <label style="margin:0 0 7px;font-weight:400;font-size:12px">
+        <input type="checkbox" id="lit-rev" ${LIT.reviews ? "checked" : ""} style="width:auto">
+        reviews only</label>
+      <div class="row">
+        <button class="ghost sm" id="lit-suggest" style="flex:1">Suggest from record</button>
+        <button class="sm" id="lit-go" style="flex:1">Search</button>
+      </div>
+      <div class="err tiny" id="lit-err"></div>
+      ${LIT.dropped.length ? `<div class="tiny muted" style="margin-top:8px">
+        Nothing matched all your terms, so it dropped
+        ${LIT.dropped.map(d => `<strong>${esc(d)}</strong>`).join(", ")} and searched
+        <code>${esc(LIT.used)}</code>.</div>` : ""}
+      <div style="margin-top:10px">
+        ${LIT.results.length ? LIT.results.map(r => `
+          <div class="paper">
+            <a class="pt" href="${esc(r.url)}" target="_blank" rel="noopener"
+               style="text-decoration:none;display:block">${esc(r.title)}</a>
+            <div class="pm">${esc(r.authors.join(", "))}${r.more_authors ? " et al." : ""}
+              ${r.journal ? `, ${esc(r.journal)}` : ""}${r.year ? `, ${esc(r.year)}` : ""}</div>
+            <div style="margin-top:6px">
+              <span class="pill ${r.kind === "preprint" ? "" : "on"}">${esc(r.kind)}</span>
+              ${r.cited_by ? `<span class="pill">${r.cited_by} cites</span>` : ""}
+              ${r.open_access ? `<span class="pill">open</span>` : ""}
+              ${r.in_my_library ? `<span class="pill mine">in my library</span>` : ""}
+            </div>
+          </div>`).join("")
+          : LIT.ran ? `<div class="small muted">Nothing found. Try fewer terms.</div>` : ""}
+      </div>
+    </div></div>`;
 
   $("#z-coll").onchange = (e) => { ZFILTER.coll = e.target.value; loadPapers(); };
   $("#z-eng").onchange = (e) => { ZFILTER.engaged = e.target.checked; loadPapers(); };
@@ -923,6 +963,35 @@ function renderPapersRail() {
       : await api(`/experiments/${EXP.id}/papers`, "POST", { zotero_key: k });
     render(); renderRail();
   });
+
+  const q = $("#lit-q");
+  q.oninput = () => LIT.query = q.value;
+  $("#lit-pp").onchange = (e) => LIT.preprints = e.target.checked;
+  $("#lit-rev").onchange = (e) => LIT.reviews = e.target.checked;
+  $("#lit-suggest").onclick = async () => {
+    if (!EXP) return;
+    const out = await api(`/experiments/${EXP.id}/literature/suggest`);
+    LIT.query = out.query;
+    q.value = out.query;
+  };
+  $("#lit-go").onclick = async (e) => {
+    const b = e.target;
+    if (!LIT.query.trim()) { $("#lit-err").textContent = "Type something to search for."; return; }
+    b.disabled = true; b.innerHTML = `<span class="spin">◐</span>`;
+    try {
+      const out = await api("/literature/search", "POST", {
+        query: LIT.query, include_preprints: LIT.preprints, reviews_only: LIT.reviews,
+      });
+      LIT.results = out.results;
+      LIT.used = out.query_used;
+      LIT.dropped = out.dropped;
+      LIT.ran = true;
+      renderRail();
+    } catch (err) {
+      b.disabled = false; b.textContent = "Search";
+      $("#lit-err").textContent = err.message;
+    }
+  };
 }
 
 async function openPaper(key) {
