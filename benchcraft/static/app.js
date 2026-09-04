@@ -118,6 +118,7 @@ async function boot() {
     projects = [await api("/projects", "POST", { name: "Untitled project", description: "" })];
   }
   PROJECT = projects[0];
+  TEMPLATES = await api("/templates");
   TSTATUS = await api("/transcription/status");
   ZSTATUS = await api("/zotero/status");
   if (ZSTATUS.ready) {
@@ -1462,8 +1463,11 @@ function wire(c, ch) {
   if (branch) branch.onclick = () => renderNewExperiment(EXP.id);
 }
 
+let CTX_TPL = "blank";
+
 function renderNewExperiment(parentId) {
-  CTX = [["cell line", ""], ["passage", ""], ["differentiation day", ""]];
+  CTX_TPL = "blank";
+  CTX = [["", ""]];
   const valueListId = (i) => `vals-${i}`;
   const rows = () => CTX.map((_, i) => {
     const vals = SUGG.context_values[CTX[i][0]] || [];
@@ -1480,6 +1484,10 @@ function renderNewExperiment(parentId) {
 
   $("#main").innerHTML = `<div class="card">
     <h2>${parentId ? "Next experiment" : "New experiment"}</h2>
+    <h3 style="margin-top:16px">Start from</h3>
+    <p class="tiny muted" style="margin-top:-6px">Sets up the context fields people in that
+    line of work actually record. Change any of them after.</p>
+    <div id="tpl-list"></div>
     ${parentId ? `<div class="small muted">Linked in the decision graph as the step you chose
       after the previous one.</div>` : ""}
     <label>Title</label><input id="n-title">
@@ -1508,6 +1516,23 @@ function renderNewExperiment(parentId) {
     <div class="err" id="n-err"></div>
   </div>`;
 
+  const drawTemplates = () => {
+    $("#tpl-list").innerHTML = TEMPLATES.map(t => `
+      <div class="tpl ${t.id === (CTX_TPL || "blank") ? "on" : ""}" data-tpl="${t.id}">
+        <div class="n">${esc(t.name)}</div>
+        <div class="w">${esc(t.who)}</div>
+      </div>`).join("");
+    $("#tpl-list").querySelectorAll("[data-tpl]").forEach(el => el.onclick = () => {
+      CTX_TPL = el.dataset.tpl;
+      const t = TEMPLATES.find(x => x.id === CTX_TPL);
+      CTX = Object.entries(t.context);
+      if (!CTX.length) CTX = [["", ""]];
+      $("#ctx").innerHTML = rows();
+      drawTemplates();
+      bind();
+    });
+  };
+
   const bind = () => {
     $("#ctx").querySelectorAll("[data-k]").forEach(el =>
       el.oninput = () => {
@@ -1528,6 +1553,7 @@ function renderNewExperiment(parentId) {
     $("#ctx").querySelectorAll("[data-x]").forEach(el =>
       el.onclick = () => { CTX.splice(+el.dataset.x, 1); $("#ctx").innerHTML = rows(); bind(); });
   };
+  drawTemplates();
   bind();
   $("#ctx-add").onclick = () => { CTX.push(["", ""]); $("#ctx").innerHTML = rows(); bind(); };
   $("#n-save").onclick = async () => {
@@ -1540,6 +1566,7 @@ function renderNewExperiment(parentId) {
       parent_experiment_id: parentId || null,
       folder_id: fsel && fsel.value ? +fsel.value : null,
       mode: $("#n-cycle").checked ? "cycle" : "notebook",
+      template: CTX_TPL,
     });
     EXP = created;
     await refreshList(created.id);
@@ -1850,5 +1877,99 @@ function reagentForm(r) {
 }
 
 $("#btn-bench").onclick = openBench;
+
+let TEMPLATES = [], CALC = { kind: "dilution", result: null };
+
+const CALC_FORMS = {
+  dilution: { label: "Dilution, C1V1 = C2V2", fields: [
+    ["c1", "stock conc.", "number", 1], ["c1_unit", "", "molar", "M"],
+    ["c2", "target conc.", "number", 100], ["c2_unit", "", "molar", "mM"],
+    ["v2", "final volume", "number", 50], ["v2_unit", "", "volume", "mL"]] },
+  molarity: { label: "Mass for a molarity", fields: [
+    ["mw", "MW (g/mol)", "number", 294.19],
+    ["molarity", "concentration", "number", 100], ["m_unit", "", "molar", "mM"],
+    ["volume", "volume", "number", 50], ["v_unit", "", "volume", "mL"]] },
+  percent: { label: "Percent solution, w/v", fields: [
+    ["percent", "percent", "number", 2],
+    ["volume", "volume", "number", 50], ["v_unit", "", "volume", "mL"]] },
+  serial: { label: "Serial dilution", fields: [
+    ["start", "starting conc.", "number", 1], ["unit", "", "molar", "mM"],
+    ["fold", "fold per step", "number", 10], ["steps", "steps", "number", 5]] },
+  seeding: { label: "Cell seeding", fields: [
+    ["density", "cells per unit", "number", 50000],
+    ["area_or_volume", "amount", "number", 6], ["unit", "unit name", "text", "cm2"]] },
+  rcf: { label: "rpm to x g", fields: [
+    ["rpm", "rpm", "number", 3000], ["radius_mm", "rotor radius (mm)", "number", 95]] },
+  rpm: { label: "x g to rpm", fields: [
+    ["rcf", "x g", "number", 300], ["radius_mm", "rotor radius (mm)", "number", 95]] },
+};
+const MOLAR_UNITS = ["M", "mM", "uM", "nM", "pM"];
+const VOL_UNITS = ["L", "mL", "uL", "nL"];
+
+function openCalc() {
+  modal.classList.remove("wide");
+  drawCalc();
+  modal.showModal();
+}
+
+function drawCalc() {
+  const form = CALC_FORMS[CALC.kind];
+  const field = ([key, label, type, dflt]) => {
+    if (type === "molar" || type === "volume") {
+      const opts = type === "molar" ? MOLAR_UNITS : VOL_UNITS;
+      return `<div><label style="margin:0 0 4px">${esc(label || "unit")}</label>
+        <select data-arg="${key}">${opts.map(u =>
+          `<option ${u === dflt ? "selected" : ""}>${u}</option>`).join("")}</select></div>`;
+    }
+    return `<div><label style="margin:0 0 4px">${esc(label)}</label>
+      <input data-arg="${key}" type="${type}" step="any" value="${esc(dflt)}"></div>`;
+  };
+
+  $("#modal-body").innerHTML = `
+    <h2>Calculator</h2>
+    <p class="small muted">Your arithmetic, shown in full. Nothing here calls a model, so it
+    cannot be confidently wrong.</p>
+    <div class="chips" style="margin-bottom:14px">
+      ${Object.entries(CALC_FORMS).map(([k, f]) =>
+        `<span class="chip ${k === CALC.kind ? "on" : ""}" data-kind="${k}">${esc(f.label)}</span>`).join("")}
+    </div>
+    <div class="calc-grid">${form.fields.map(field).join("")}</div>
+    <div style="margin-top:14px"><button id="calc-go">Work it out</button></div>
+    <div class="err" id="calc-err"></div>
+    ${CALC.result ? `<div class="calc-out">
+      <div class="ans">${esc(CALC.result.answer)}</div>
+      <div class="frm">${esc(CALC.result.formula)}</div>
+      <div class="stp">${CALC.result.steps.map(esc).join("<br>")}</div>
+      ${EXP ? `<button class="ghost sm" id="calc-save" style="margin-top:12px">
+        Save into this entry</button>
+        <span class="tiny muted" id="calc-saved" style="margin-left:8px"></span>` : ""}
+    </div>` : ""}`;
+
+  $("#modal-body").querySelectorAll("[data-kind]").forEach(el => el.onclick = () => {
+    CALC.kind = el.dataset.kind; CALC.result = null; drawCalc();
+  });
+  $("#calc-go").onclick = async () => {
+    const args = {};
+    $("#modal-body").querySelectorAll("[data-arg]").forEach(el => {
+      args[el.dataset.arg] = el.type === "number" ? +el.value : el.value;
+    });
+    try {
+      CALC.result = await api("/calc", "POST", { kind: CALC.kind, args });
+      drawCalc();
+    } catch (e) { $("#calc-err").textContent = e.message; }
+  };
+  const save = $("#calc-save");
+  if (save) save.onclick = async () => {
+    const r = CALC.result;
+    EXP = await api(`/experiments/${EXP.id}/notes`, "POST", {
+      body: `${r.answer}. ${r.formula}. ${r.steps.join("; ")}`,
+      source: "calculation",
+    });
+    render();
+    $("#calc-saved").textContent = "saved into your bench notes";
+  };
+}
+
+$("#btn-calc").onclick = openCalc;
 
 boot();

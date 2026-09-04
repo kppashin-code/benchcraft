@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import connectors, db, literature, llm, transcribe, zotero
+from . import calc, connectors, db, literature, llm, templates, transcribe, zotero
 
 app = FastAPI(title="Benchcraft")
 STATIC = Path(__file__).resolve().parent / "static"
@@ -34,6 +34,7 @@ class ExperimentIn(BaseModel):
     parent_experiment_id: int | None = None
     folder_id: int | None = None
     mode: str = "notebook"
+    template: str = ""
 
 
 class NoteIn(BaseModel):
@@ -112,6 +113,11 @@ class UseIn(BaseModel):
 
 class ModeIn(BaseModel):
     mode: str
+
+
+class CalcIn(BaseModel):
+    kind: str
+    args: dict
 
 
 class StepNoteIn(BaseModel):
@@ -215,6 +221,20 @@ def create_experiment(project_id: int, body: ExperimentIn):
          body.mode if body.mode in ('notebook', 'cycle') else 'notebook',
          body.question, json.dumps(body.context), db.now()),
     )
+    tpl = templates.by_id(body.template) if body.template else None
+    if tpl:
+        for step in tpl["protocol"]:
+            db.insert(
+                "INSERT INTO notes (experiment_id, body, source, created_at) VALUES (?, ?, ?, ?)",
+                (eid, step, "protocol", db.now()),
+            )
+        for term, plain in tpl["glossary"]:
+            db.execute(
+                """INSERT INTO glossary (project_id, term, plain, source, created_at)
+                   VALUES (?, ?, ?, 'curated', ?)
+                   ON CONFLICT (project_id, term) DO NOTHING""",
+                (project_id, term, plain, db.now()),
+            )
     return db.experiment_bundle(eid)
 
 
@@ -523,6 +543,19 @@ def delete_annotation(annotation_id: int):
     n = db.row("SELECT * FROM notes WHERE id = ?", (a["note_id"],))
     db.execute("DELETE FROM step_notes WHERE id = ?", (annotation_id,))
     return db.experiment_bundle(n["experiment_id"])
+
+
+@app.get("/api/templates")
+def list_templates():
+    return templates.TEMPLATES
+
+
+@app.post("/api/calc")
+def do_calc(body: CalcIn):
+    try:
+        return calc.run(body.kind, body.args)
+    except calc.CalcError as e:
+        raise HTTPException(422, str(e))
 
 
 @app.get("/api/transcription/status")
