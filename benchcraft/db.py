@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "benchcraft.db"
 AUDIO_DIR = ROOT / "audio"
 PAPER_DIR = ROOT / "papers"
+DATA_DIR = ROOT / "data"
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -108,6 +109,22 @@ CREATE TABLE IF NOT EXISTS reagent_uses (
     experiment_id INTEGER REFERENCES experiments(id) ON DELETE SET NULL,
     amount        REAL,
     note          TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS datasets (
+    id            INTEGER PRIMARY KEY,
+    project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    experiment_id INTEGER REFERENCES experiments(id) ON DELETE SET NULL,
+    kind          TEXT NOT NULL DEFAULT 'other',
+    label         TEXT NOT NULL DEFAULT '',
+    filename      TEXT NOT NULL,
+    stored_path   TEXT NOT NULL,
+    size_bytes    INTEGER NOT NULL DEFAULT 0,
+    n_rows        INTEGER,
+    n_cols        INTEGER,
+    columns_json  TEXT NOT NULL DEFAULT '[]',
+    notes         TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL
 );
 
@@ -310,6 +327,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def init() -> None:
     AUDIO_DIR.mkdir(exist_ok=True)
     PAPER_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
         _migrate(conn)
@@ -354,6 +372,9 @@ def experiment_bundle(experiment_id: int) -> dict | None:
         )
     exp["recordings"] = rows(
         "SELECT * FROM recordings WHERE experiment_id = ? ORDER BY created_at", (experiment_id,)
+    )
+    exp["datasets"] = rows(
+        "SELECT * FROM datasets WHERE experiment_id = ? ORDER BY created_at", (experiment_id,)
     )
     exp["reagents"] = rows(
         """SELECT u.*, r.name, r.lot, r.supplier, r.catalogue, r.concentration, r.unit,

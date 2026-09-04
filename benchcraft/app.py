@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import calc, connectors, db, literature, llm, templates, transcribe, zotero
+from . import calc, connectors, datafiles, db, literature, llm, templates, transcribe, zotero
 
 app = FastAPI(title="Benchcraft")
 STATIC = Path(__file__).resolve().parent / "static"
@@ -113,6 +113,12 @@ class UseIn(BaseModel):
 
 class ModeIn(BaseModel):
     mode: str
+
+
+class DatasetIn(BaseModel):
+    kind: str = "other"
+    label: str = ""
+    notes: str = ""
 
 
 class CalcIn(BaseModel):
@@ -543,6 +549,95 @@ def delete_annotation(annotation_id: int):
     n = db.row("SELECT * FROM notes WHERE id = ?", (a["note_id"],))
     db.execute("DELETE FROM step_notes WHERE id = ?", (annotation_id,))
     return db.experiment_bundle(n["experiment_id"])
+
+
+@app.post("/api/experiments/{experiment_id}/datasets")
+async def upload_dataset(experiment_id: int, file: UploadFile = File(...),
+                         kind: str = "other", label: str = ""):
+    exp = db.row("SELECT * FROM experiments WHERE id = ?", (experiment_id,))
+    if not exp:
+        raise HTTPException(404, "No such experiment")
+    blob = await file.read()
+    try:
+        datafiles.check(file.filename or "", len(blob))
+    except datafiles.DataError as e:
+        raise HTTPException(422, str(e))
+
+    db.DATA_DIR.mkdir(exist_ok=True)
+    suffix = Path(file.filename).suffix.lower()
+    stored = db.DATA_DIR / f"{uuid.uuid4().hex}{suffix}"
+    stored.write_bytes(blob)
+
+    prof = datafiles.profile(stored)
+    did = db.insert(
+        """INSERT INTO datasets
+           (project_id, experiment_id, kind, label, filename, stored_path, size_bytes,
+            n_rows, n_cols, columns_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (exp["project_id"], experiment_id, kind, label or Path(file.filename).stem,
+         file.filename, str(stored), len(blob), prof["n_rows"], prof["n_cols"],
+         json.dumps(prof["columns"]), db.now()),
+    )
+    return {"dataset_id": did, "experiment": db.experiment_bundle(experiment_id)}
+
+
+@app.get("/api/datasets/{dataset_id}")
+def get_dataset(dataset_id: int):
+    d = db.row("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
+    if not d:
+        raise HTTPException(404, "No such dataset")
+    d["columns"] = datafiles.columns_of(d)
+    d.pop("columns_json", None)
+    path = Path(d["stored_path"])
+    d["exists"] = path.exists()
+    d["preview"] = datafiles.preview(path) if path.exists() else {"header": [], "rows": []}
+    d.pop("stored_path", None)
+    return d
+
+
+@app.get("/api/datasets/{dataset_id}/file")
+def download_dataset(dataset_id: int):
+    d = db.row("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
+    if not d or not Path(d["stored_path"]).exists():
+        raise HTTPException(404, "No file")
+    return FileResponse(d["stored_path"], filename=d["filename"])
+
+
+@app.put("/api/datasets/{dataset_id}")
+def edit_dataset(dataset_id: int, body: DatasetIn):
+    d = db.row("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
+    if not d:
+        raise HTTPException(404, "No such dataset")
+    db.execute("UPDATE datasets SET kind = ?, label = ?, notes = ? WHERE id = ?",
+               (body.kind, body.label, body.notes, dataset_id))
+    return get_dataset(dataset_id)
+
+
+@app.delete("/api/datasets/{dataset_id}")
+def delete_dataset(dataset_id: int):
+    d = db.row("SELECT * FROM datasets WHERE id = ?", (dataset_id,))
+    if not d:
+        raise HTTPException(404, "No such dataset")
+    Path(d["stored_path"]).unlink(missing_ok=True)
+    db.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
+    return db.experiment_bundle(d["experiment_id"]) if d["experiment_id"] else {"deleted": dataset_id}
+
+
+@app.get("/api/projects/{project_id}/datasets")
+def project_datasets(project_id: int):
+    out = db.rows(
+        """SELECT d.*, e.title AS experiment_title, f.name AS folder_name
+           FROM datasets d
+           LEFT JOIN experiments e ON e.id = d.experiment_id
+           LEFT JOIN folders f ON f.id = e.folder_id
+           WHERE d.project_id = ? ORDER BY d.created_at DESC""",
+        (project_id,),
+    )
+    for d in out:
+        d["columns"] = datafiles.columns_of(d)
+        d.pop("columns_json", None)
+        d.pop("stored_path", None)
+    return out
 
 
 @app.get("/api/templates")

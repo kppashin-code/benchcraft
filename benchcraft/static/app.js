@@ -324,6 +324,7 @@ function render() {
         <button class="ghost sm" id="btn-note">Add</button>
       </div>
     </div>
+    ${renderDatasets()}
     ${renderReagentsUsed()}
     ${renderInk()}
     ${renderLinkedPapers()}
@@ -371,6 +372,19 @@ function renderCommitment(c) {
     <div class="tiny muted" style="margin-top:16px">
       Locked ${c.locked_at.replace("T", " ").slice(0, 16)}. Your words, unedited.
     </div>
+  </div>`;
+}
+
+function renderDatasets() {
+  const ds = EXP.datasets || [];
+  if (!ds.length) return "";
+  return `<div class="card">
+    <h3>Data from this run</h3>
+    ${ds.map(d => `<div class="ds">
+      <div class="t" data-opends="${d.id}">${esc(d.label || d.filename)}</div>
+      <div class="m">${esc(d.kind)}${d.n_rows != null
+        ? `, ${d.n_rows} rows x ${d.n_cols} cols` : ""}</div>
+    </div>`).join("")}
   </div>`;
 }
 
@@ -757,7 +771,130 @@ function renderRail() {
   if (TAB === "ref") return renderRefRail();
   if (TAB === "voice") return renderVoiceRail();
   if (TAB === "papers") return renderPapersRail();
+  if (TAB === "data") return renderDataRail();
   return renderConnRail();
+}
+
+const DATA_KINDS = ["qpcr", "rheology", "imaging", "sequencing", "flow", "other"];
+
+function renderDataRail() {
+  const ds = (EXP && EXP.datasets) || [];
+  $("#rail").innerHTML = `<div class="ref-body">
+    <h3>Data on this entry</h3>
+    <p class="tiny muted" style="margin-top:-5px">Files stay on this machine, in
+    <code>benchcraft/data</code>. Nothing is uploaded and nothing is sent to a model unless you
+    ask for it explicitly.</p>
+    <select id="ds-kind" style="margin-bottom:6px">
+      ${DATA_KINDS.map(k => `<option value="${k}">${k}</option>`).join("")}
+    </select>
+    <div class="drop" id="ds-drop">Drop a file here, or click to choose<br>
+      <span class="tiny">csv, tsv, txt, xlsx, json, images, pdf. up to 60 MB</span></div>
+    <input type="file" id="ds-file" style="display:none">
+    <div class="err tiny" id="ds-err"></div>
+    <div style="margin-top:12px">
+      ${ds.length ? ds.map(d => `
+        <div class="ds">
+          <div class="row" style="align-items:flex-start">
+            <div class="t" data-ds="${d.id}" style="flex:1">${esc(d.label || d.filename)}</div>
+            <button class="trash" data-delds="${d.id}">${TRASH}</button>
+          </div>
+          <div class="m">${esc(d.kind)}${d.n_rows != null
+            ? `, ${d.n_rows} rows x ${d.n_cols} cols` : ""}, ${(d.size_bytes / 1024).toFixed(0)} kB</div>
+        </div>`).join("") : `<div class="small muted">Nothing attached yet.</div>`}
+    </div>
+    <button class="ghost sm" id="ds-all" style="margin-top:14px;width:100%">
+      Compare across the project</button>
+  </div>`;
+
+  const drop = $("#ds-drop"), file = $("#ds-file");
+  const send = async (f) => {
+    if (!EXP) { $("#ds-err").textContent = "Open an entry first."; return; }
+    $("#ds-err").textContent = "";
+    drop.textContent = "reading";
+    const fd = new FormData();
+    fd.append("file", f);
+    const q = new URLSearchParams({ kind: $("#ds-kind").value, label: "" });
+    const r = await fetch(`/api/experiments/${EXP.id}/datasets?${q}`, { method: "POST", body: fd });
+    drop.innerHTML = `Drop a file here, or click to choose<br>
+      <span class="tiny">csv, tsv, txt, xlsx, json, images, pdf. up to 60 MB</span>`;
+    if (!r.ok) { $("#ds-err").textContent = (await r.json()).detail || "Upload failed"; return; }
+    EXP = (await r.json()).experiment;
+    render(); renderRail();
+  };
+  drop.onclick = () => file.click();
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = (e) => {
+    e.preventDefault(); drop.classList.remove("over");
+    if (e.dataTransfer.files[0]) send(e.dataTransfer.files[0]);
+  };
+  file.onchange = () => file.files[0] && send(file.files[0]);
+  $("#rail").querySelectorAll("[data-ds]").forEach(el =>
+    el.onclick = () => openDataset(+el.dataset.ds));
+  $("#rail").querySelectorAll("[data-delds]").forEach(el => el.onclick = async () => {
+    EXP = await api(`/datasets/${el.dataset.delds}`, "DELETE");
+    render(); renderRail();
+  });
+  $("#ds-all").onclick = openDataView;
+}
+
+async function openDataset(id) {
+  const d = await api(`/datasets/${id}`);
+  modal.classList.add("wide");
+  $("#modal-body").innerHTML = `
+    <h2 style="font-size:19px">${esc(d.label || d.filename)}</h2>
+    <div class="small muted">${esc(d.kind)}, ${esc(d.filename)}, ${(d.size_bytes / 1024).toFixed(0)} kB
+      ${d.n_rows != null ? `, ${d.n_rows} rows x ${d.n_cols} columns` : ""}</div>
+    <div class="tiny"><a href="/api/datasets/${d.id}/file" download>download the original</a></div>
+
+    ${d.columns.length ? `<h3 style="margin-top:20px">Columns</h3>
+      <div class="dscroll"><table class="dtable">
+        <tr><th>column</th><th>n</th><th>mean</th><th>sd</th><th>range</th><th>values</th></tr>
+        ${d.columns.map(c => `<tr>
+          <td>${esc(c.name)}</td><td>${c.n}</td>
+          <td>${c.numeric ? c.mean : ""}</td>
+          <td>${c.numeric && c.sd != null ? c.sd : ""}</td>
+          <td>${c.numeric ? `${c.min} to ${c.max}` : ""}</td>
+          <td>${c.numeric ? "" : esc((c.examples || []).join(", "))}</td>
+        </tr>`).join("")}
+      </table></div>` : ""}
+
+    ${d.preview.header.length ? `<h3 style="margin-top:20px">First rows</h3>
+      <div class="dscroll"><table class="dtable">
+        <tr>${d.preview.header.map(h => `<th>${esc(h)}</th>`).join("")}</tr>
+        ${d.preview.rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}
+      </table></div>` : ""}
+    <p class="tiny muted" style="margin-top:14px">Benchcraft reads the shape of this file so you
+    can see it. It does not interpret it, and no model has seen it.</p>`;
+  modal.showModal();
+}
+
+async function openDataView() {
+  const all = await api(`/projects/${PROJECT.id}/datasets`);
+  const byKind = {};
+  all.forEach(d => (byKind[d.kind] ||= []).push(d));
+  modal.classList.add("wide");
+  $("#modal-body").innerHTML = `
+    <h2>Data across the project</h2>
+    <p class="small muted">Every file, independent of where it sits in the log, so you can line
+    up the same measurement across runs.</p>
+    ${all.length ? Object.entries(byKind).map(([kind, list]) => `
+      <h3 style="margin-top:20px">${esc(kind)}</h3>
+      <div class="dscroll"><table class="dtable">
+        <tr><th>file</th><th>entry</th><th>folder</th><th>rows</th><th>numeric columns</th><th>when</th></tr>
+        ${list.map(d => `<tr>
+          <td><button class="link" data-open-ds="${d.id}">${esc(d.label || d.filename)}</button></td>
+          <td>${esc(d.experiment_title || "unattached")}</td>
+          <td>${esc(d.folder_name || "")}</td>
+          <td>${d.n_rows != null ? d.n_rows : ""}</td>
+          <td>${esc(d.columns.filter(c => c.numeric).map(c => c.name).join(", "))}</td>
+          <td>${d.created_at.slice(0, 10)}</td>
+        </tr>`).join("")}
+      </table></div>`).join("")
+      : `<div class="small muted">No data attached anywhere yet.</div>`}`;
+  modal.showModal();
+  $("#modal-body").querySelectorAll("[data-open-ds]").forEach(el =>
+    el.onclick = () => openDataset(+el.dataset.openDs));
 }
 
 function renderRefRail() {
@@ -1372,6 +1509,8 @@ function wire(c, ch) {
   const rconf = $("#r-confidence");
   if (rconf) rconf.oninput = () => $("#r-conflabel").textContent = rconf.value;
 
+  $("#main").querySelectorAll("[data-opends]").forEach(el =>
+    el.onclick = () => openDataset(+el.dataset.opends));
   $("#main").querySelectorAll("[data-annot]").forEach(el => el.onclick = async () => {
     const body = prompt("What did you actually do on this step?");
     if (!body) return;
