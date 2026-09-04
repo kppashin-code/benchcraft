@@ -111,6 +111,13 @@ CREATE TABLE IF NOT EXISTS reagent_uses (
     created_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS step_notes (
+    id         INTEGER PRIMARY KEY,
+    note_id    INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ink_notes (
     id            INTEGER PRIMARY KEY,
     experiment_id INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
@@ -130,11 +137,12 @@ CREATE TABLE IF NOT EXISTS highlights (
 CREATE TABLE IF NOT EXISTS commitments (
     id             INTEGER PRIMARY KEY,
     experiment_id  INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
-    expected       TEXT NOT NULL,
+    aim            TEXT NOT NULL DEFAULT '',
+    expected       TEXT NOT NULL DEFAULT '',
     observed       TEXT NOT NULL,
     interpretation TEXT NOT NULL,
-    confidence     INTEGER NOT NULL,
-    disconfirming  TEXT NOT NULL,
+    confidence     INTEGER,
+    disconfirming  TEXT NOT NULL DEFAULT '',
     proposed_next  TEXT NOT NULL DEFAULT '',
     locked_at      TEXT NOT NULL
 );
@@ -249,6 +257,40 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ecols = {r["name"] for r in conn.execute("PRAGMA table_info(experiments)").fetchall()}
     if ecols and "folder_id" not in ecols:
         conn.execute("ALTER TABLE experiments ADD COLUMN folder_id INTEGER REFERENCES folders(id)")
+    ccols = conn.execute("PRAGMA table_info(commitments)").fetchall()
+    names = {r["name"] for r in ccols}
+    conf_required = any(r["name"] == "confidence" and r["notnull"] for r in ccols)
+    if names and (("aim" not in names) or conf_required):
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS commitments_new (
+                id             INTEGER PRIMARY KEY,
+                experiment_id  INTEGER NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+                aim            TEXT NOT NULL DEFAULT '',
+                expected       TEXT NOT NULL DEFAULT '',
+                observed       TEXT NOT NULL,
+                interpretation TEXT NOT NULL,
+                confidence     INTEGER,
+                disconfirming  TEXT NOT NULL DEFAULT '',
+                proposed_next  TEXT NOT NULL DEFAULT '',
+                locked_at      TEXT NOT NULL
+            );
+            """
+        )
+        cols = "aim, " if "aim" in names else "'' AS aim, "
+        conn.execute(
+            "INSERT INTO commitments_new (id, experiment_id, aim, expected, observed, "
+            "interpretation, confidence, disconfirming, proposed_next, locked_at) "
+            f"SELECT id, experiment_id, {cols} expected, observed, interpretation, confidence, "
+            "disconfirming, proposed_next, locked_at FROM commitments"
+        )
+        conn.executescript(
+            "DROP TABLE commitments;"
+            "ALTER TABLE commitments_new RENAME TO commitments;"
+            "CREATE INDEX IF NOT EXISTS idx_commit_exp ON commitments(experiment_id);"
+        )
+        conn.execute("PRAGMA foreign_keys = ON")
     if ecols and "mode" not in ecols:
         conn.execute("ALTER TABLE experiments ADD COLUMN mode TEXT NOT NULL DEFAULT 'notebook'")
         conn.execute(
@@ -306,6 +348,10 @@ def experiment_bundle(experiment_id: int) -> dict | None:
     exp["notes"] = rows(
         "SELECT * FROM notes WHERE experiment_id = ? ORDER BY created_at", (experiment_id,)
     )
+    for n in exp["notes"]:
+        n["annotations"] = rows(
+            "SELECT * FROM step_notes WHERE note_id = ? ORDER BY created_at", (n["id"],)
+        )
     exp["recordings"] = rows(
         "SELECT * FROM recordings WHERE experiment_id = ? ORDER BY created_at", (experiment_id,)
     )

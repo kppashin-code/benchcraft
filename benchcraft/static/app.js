@@ -36,6 +36,11 @@ let UPLOADED = [];
 let LIT = { query: "", results: [], used: "", dropped: [], preprints: false, reviews: false, ran: false };
 let SUGG = { context_keys: [], context_values: {}, terms: [] };
 let POLL = null;
+let PREFS = {
+  guided: localStorage.getItem("bc.guided") === "1",
+  confidence: localStorage.getItem("bc.confidence") === "1",
+};
+function setPref(k, v) { PREFS[k] = v; localStorage.setItem("bc." + k, v ? "1" : "0"); }
 let PEN = { open: false, colour: "#021C45", size: 2.2, erase: false, strokes: [] };
 const INK_COLOURS = ["#021C45", "#1a56b8", "#8d3b32", "#2f6b3f"];
 
@@ -288,9 +293,16 @@ function render() {
 
       ${EXP.notes.some(n => n.source === "protocol") ? `
         <h3 style="margin-top:20px">Protocol</h3>
-        <div class="ctx" style="margin-top:0">
-          ${EXP.notes.filter(n => n.source === "protocol").map(n =>
-            `<div>${withHighlights(n.body)}</div>`).join("")}
+        <p class="tiny muted" style="margin-top:-6px">Annotate any line with what you actually
+        did. Do not do 10 min, do 5.</p>
+        <div style="margin-top:8px">
+          ${EXP.notes.filter(n => n.source === "protocol").map(n => `
+            <div class="step">
+              <div class="ctx" style="margin:0">${withHighlights(n.body)}
+                <button class="link" data-annot="${n.id}">annotate</button></div>
+              ${(n.annotations || []).map(a => `<div class="stepnote">${esc(a.body)}
+                <button class="link" data-delannot="${a.id}">remove</button></div>`).join("")}
+            </div>`).join("")}
         </div>` : ""}
       <h3 style="margin-top:20px">Bench notes</h3>
       ${EXP.notes.filter(n => n.source !== "protocol").length
@@ -344,14 +356,15 @@ function renderCommitment(c) {
       <span class="p">preserved</span>
     </div>
     <div style="font-size:15.5px;line-height:1.6">${withHighlights(c.interpretation)}</div>
-    <div class="meter">
+    ${c.confidence != null ? `<div class="meter">
       <div class="bar"><div class="fill" style="width:${c.confidence}%"></div></div>
       <div class="v">${c.confidence}% confidence</div>
-    </div>
+    </div>` : ""}
     <dl style="margin:0">
-      <dt>Expected</dt><dd>${esc(c.expected)}</dd>
+      ${c.aim ? `<dt>Aim</dt><dd>${esc(c.aim)}</dd>` : ""}
+      ${c.expected ? `<dt>Expected</dt><dd>${esc(c.expected)}</dd>` : ""}
       <dt>Observed</dt><dd>${withHighlights(c.observed)}</dd>
-      <dt>Would change your mind</dt><dd>${esc(c.disconfirming)}</dd>
+      ${c.disconfirming ? `<dt>Would change your mind</dt><dd>${esc(c.disconfirming)}</dd>` : ""}
       ${c.proposed_next ? `<dt>Next experiment you proposed</dt><dd>${esc(c.proposed_next)}</dd>` : ""}
     </dl>
     <div class="tiny muted" style="margin-top:16px">
@@ -530,28 +543,47 @@ function renderConnectorOutput() {
 
 function renderCommitForm() {
   return `<div class="card">
-    <h3>Your view, before anything answers</h3>
-    <p class="small muted" style="margin-top:-4px">
-      Once you lock this it cannot be edited. That is the whole mechanism: what you thought
-      before the model spoke has to survive intact, or none of it means anything later.</p>
-    <label>What did you expect?
-      <span class="hint">Before you ran it. Say it even if it turned out wrong, especially then.</span></label>
-    <textarea id="f-expected" rows="2"></textarea>
-    <label>What did you actually observe?
-      <span class="hint">The observation, not yet the reading of it.</span></label>
-    <textarea id="f-observed" rows="3"></textarea>
-    <label>What do you think happened?
-      <span class="hint">Your interpretation. Commit to one.</span></label>
-    <textarea id="f-interpretation" rows="3"></textarea>
-    <label>How confident are you? <span id="conflabel" class="conf">60</span>/100
-      <span class="hint">Honestly, not defensively. Being under-confident costs you as much
-      as being over-confident.</span></label>
-    <input type="range" id="f-confidence" min="0" max="100" value="60" style="padding:0">
-    <label>What result would change your mind?
-      <span class="hint">If you cannot name one, you are not holding a hypothesis yet.</span></label>
-    <textarea id="f-disconfirming" rows="2"></textarea>
-    <label>What should the next experiment be? <span class="hint">Optional.</span></label>
-    <textarea id="f-next" rows="2"></textarea>
+    <div class="row" style="justify-content:space-between;align-items:flex-start">
+      <h3 style="margin:0">Your view, before anything answers</h3>
+      <div class="row" style="gap:14px">
+        <label class="tiny" style="margin:0;font-weight:400;white-space:nowrap">
+          <input type="checkbox" id="opt-guided" ${PREFS.guided ? "checked" : ""}
+            style="width:auto"> prompts</label>
+        <label class="tiny" style="margin:0;font-weight:400;white-space:nowrap">
+          <input type="checkbox" id="opt-conf" ${PREFS.confidence ? "checked" : ""}
+            style="width:auto"> confidence</label>
+      </div>
+    </div>
+    <p class="small muted" style="margin-top:6px">
+      Write it however you write. Once you lock it, it cannot be edited, and only then does the
+      challenge open.</p>
+
+    ${PREFS.guided ? `
+      <label>What did you expect?
+        <span class="hint">Before you ran it. Say it even if it turned out wrong.</span></label>
+      <textarea id="f-expected" rows="2"></textarea>
+      <label>What did you actually observe?
+        <span class="hint">The observation, not yet the reading of it.</span></label>
+      <textarea id="f-observed" rows="3"></textarea>
+      <label>What do you think happened?</label>
+      <textarea id="f-interpretation" rows="3"></textarea>
+      <label>What result would change your mind?
+        <span class="hint">If you cannot name one, you are not holding a hypothesis yet.</span></label>
+      <textarea id="f-disconfirming" rows="2"></textarea>
+      <label>What should the next experiment be? <span class="hint">Optional.</span></label>
+      <textarea id="f-next" rows="2"></textarea>`
+    : `
+      <label>Aim</label>
+      <textarea id="f-aim" rows="2" placeholder="what this run was for"></textarea>
+      <label>What happened</label>
+      <textarea id="f-observed" rows="4" placeholder="what you saw"></textarea>
+      <label>Conclusions</label>
+      <textarea id="f-interpretation" rows="4" placeholder="what you make of it"></textarea>`}
+
+    ${PREFS.confidence ? `
+      <label>How confident are you? <span id="conflabel" class="conf">60</span>/100</label>
+      <input type="range" id="f-confidence" min="0" max="100" value="60" style="padding:0">` : ""}
+
     <div style="margin-top:16px"><button id="btn-lock">Lock this and continue</button></div>
     <div class="err" id="lock-err"></div>
   </div>`;
@@ -609,12 +641,15 @@ function renderChallenge(ch, c, resp) {
     <div class="sub" style="color:var(--navy);border-top-color:var(--rule)">Strongest alternative you left unexamined</div>
     <div class="small">${esc(d.strongest_unexamined_alternative)}</div>
     <div class="small muted" style="margin-top:4px"><em>To put it down:</em> ${esc(d.how_to_dismiss_it)}</div>
-    <div class="sub" style="color:var(--navy);border-top-color:var(--rule)">On your stated confidence of ${c.confidence}</div>
-    <div class="small">${esc(d.confidence_note)}</div>
+    ${c.confidence != null && d.confidence_note ? `
+      <div class="sub" style="color:var(--navy);border-top-color:var(--rule)">On your stated confidence of ${c.confidence}</div>
+      <div class="small">${esc(d.confidence_note)}</div>` : ""}
   </div>` : ""}
 
   ${resp ? `<div class="locked">
-      <div class="stamp">You ${esc(resp.stance)} your position. Confidence ${c.confidence} to ${resp.confidence_after}</div>
+      <div class="stamp">You ${esc(resp.stance)} your position${
+        c.confidence != null && resp.confidence_after != null
+          ? `. Confidence ${c.confidence} to ${resp.confidence_after}` : ""}</div>
       <div>${esc(resp.reasoning)}</div>
       ${resp.chosen_next ? `<div style="font-weight:600;font-size:12.5px;margin-top:9px">Next</div>
         <div>${esc(resp.chosen_next)}</div>` : ""}
@@ -633,8 +668,9 @@ function renderChallenge(ch, c, resp) {
       <label>Why? <span class="hint">Argue with it. If you are changing your mind, say what
         specifically moved you rather than that it sounded convincing.</span></label>
       <textarea id="r-reasoning" rows="3"></textarea>
-      <label>Confidence now: <span id="r-conflabel" class="conf">${c.confidence}</span>/100</label>
-      <input type="range" id="r-confidence" min="0" max="100" value="${c.confidence}" style="padding:0">
+      ${c.confidence != null ? `
+        <label>Confidence now: <span id="r-conflabel" class="conf">${c.confidence}</span>/100</label>
+        <input type="range" id="r-confidence" min="0" max="100" value="${c.confidence}" style="padding:0">` : ""}
       <label>What are you doing next, and why that?</label>
       <textarea id="r-next" rows="2"></textarea>
       <div style="margin-top:15px"><button id="btn-respond">Record decision</button></div>
@@ -688,8 +724,8 @@ function renderResolution(c, resp) {
     const words = { held: "held up", partly: "partly held up", overturned: "was overturned" };
     return `<div class="locked">
       <div class="stamp">How it turned out</div>
-      <div>Your interpretation ${esc(words[r.verdict] || r.verdict)}.
-        You were ${c.confidence}/100 confident.</div>
+      <div>Your interpretation ${esc(words[r.verdict] || r.verdict)}.${
+        c.confidence != null ? ` You were ${c.confidence}/100 confident.` : ""}</div>
       ${r.notes ? `<div class="small muted" style="margin-top:6px">${esc(r.notes)}</div>` : ""}
       <div class="tiny muted" style="margin-top:8px">Recorded ${r.created_at.slice(0, 10)}.
         This is what the calibration score is computed from.</div>
@@ -700,8 +736,7 @@ function renderResolution(c, resp) {
   return `<div class="card">
     <h3>How did it turn out?</h3>
     <p class="small muted" style="margin-top:-4px">Come back to this when you know, which may be
-    weeks. Nothing else in Benchcraft can tell you whether you were right, so this is the only
-    place your calibration comes from.
+    weeks. This is what turns a claim into a record of whether it held.
     ${r ? "You marked this unresolved before." : ""}</p>
     <label>Verdict</label>
     <select id="v-verdict">
@@ -1326,11 +1361,26 @@ function wire(c, ch) {
   $("#main").querySelectorAll("[data-openc]").forEach(el =>
     el.onclick = () => openPaper(el.dataset.openc));
 
+  const og = $("#opt-guided");
+  if (og) og.onchange = (e) => { setPref("guided", e.target.checked); render(); };
+  const oc = $("#opt-conf");
+  if (oc) oc.onchange = (e) => { setPref("confidence", e.target.checked); render(); };
+
   const conf = $("#f-confidence");
   if (conf) conf.oninput = () => $("#conflabel").textContent = conf.value;
   const rconf = $("#r-confidence");
   if (rconf) rconf.oninput = () => $("#r-conflabel").textContent = rconf.value;
 
+  $("#main").querySelectorAll("[data-annot]").forEach(el => el.onclick = async () => {
+    const body = prompt("What did you actually do on this step?");
+    if (!body) return;
+    EXP = await api(`/notes/${el.dataset.annot}/annotations`, "POST", { body });
+    render();
+  });
+  $("#main").querySelectorAll("[data-delannot]").forEach(el => el.onclick = async () => {
+    EXP = await api(`/annotations/${el.dataset.delannot}`, "DELETE");
+    render();
+  });
   $("#main").querySelectorAll("[data-delnote]").forEach(el => el.onclick = async () => {
     EXP = await api(`/notes/${el.dataset.delnote}`, "DELETE");
     render(); refreshRailData();
@@ -1354,13 +1404,15 @@ function wire(c, ch) {
   if (lock) lock.onclick = async () => {
     try {
       lock.disabled = true;
+      const val = (id) => { const el = $(id); return el ? el.value.trim() : ""; };
       const out = await api(`/experiments/${EXP.id}/commitments`, "POST", {
-        expected: $("#f-expected").value.trim(),
-        observed: $("#f-observed").value.trim(),
-        interpretation: $("#f-interpretation").value.trim(),
-        confidence: +$("#f-confidence").value,
-        disconfirming: $("#f-disconfirming").value.trim(),
-        proposed_next: $("#f-next").value.trim(),
+        aim: val("#f-aim"),
+        expected: val("#f-expected"),
+        observed: val("#f-observed"),
+        interpretation: val("#f-interpretation"),
+        confidence: $("#f-confidence") ? +$("#f-confidence").value : null,
+        disconfirming: val("#f-disconfirming"),
+        proposed_next: val("#f-next"),
       });
       EXP = out.experiment;
       render(); renderStages(); renderRail(); reloadLog();
@@ -1387,7 +1439,7 @@ function wire(c, ch) {
       EXP = await api(`/challenges/${ch.id}/response`, "POST", {
         stance: $("#r-stance").value,
         reasoning: $("#r-reasoning").value.trim(),
-        confidence_after: +$("#r-confidence").value,
+        confidence_after: $("#r-confidence") ? +$("#r-confidence").value : null,
         chosen_next: $("#r-next").value.trim(),
       });
       render(); renderStages(); reloadLog();

@@ -43,18 +43,19 @@ class NoteIn(BaseModel):
 
 
 class CommitmentIn(BaseModel):
-    expected: str
+    aim: str = ""
+    expected: str = ""
     observed: str
     interpretation: str
-    confidence: int = Field(ge=0, le=100)
-    disconfirming: str
+    confidence: int | None = Field(default=None, ge=0, le=100)
+    disconfirming: str = ""
     proposed_next: str = ""
 
 
 class ResponseIn(BaseModel):
     stance: str
     reasoning: str
-    confidence_after: int = Field(ge=0, le=100)
+    confidence_after: int | None = Field(default=None, ge=0, le=100)
     chosen_next: str = ""
 
 
@@ -111,6 +112,10 @@ class UseIn(BaseModel):
 
 class ModeIn(BaseModel):
     mode: str
+
+
+class StepNoteIn(BaseModel):
+    body: str
 
 
 class SearchIn(BaseModel):
@@ -496,6 +501,30 @@ def delete_highlight(highlight_id: int):
     return db.experiment_bundle(h["experiment_id"])
 
 
+@app.post("/api/notes/{note_id}/annotations")
+def annotate_step(note_id: int, body: StepNoteIn):
+    n = db.row("SELECT * FROM notes WHERE id = ?", (note_id,))
+    if not n:
+        raise HTTPException(404, "No such line")
+    if not body.body.strip():
+        raise HTTPException(422, "Nothing written.")
+    db.insert(
+        "INSERT INTO step_notes (note_id, body, created_at) VALUES (?, ?, ?)",
+        (note_id, body.body.strip(), db.now()),
+    )
+    return db.experiment_bundle(n["experiment_id"])
+
+
+@app.delete("/api/annotations/{annotation_id}")
+def delete_annotation(annotation_id: int):
+    a = db.row("SELECT * FROM step_notes WHERE id = ?", (annotation_id,))
+    if not a:
+        raise HTTPException(404, "No such annotation")
+    n = db.row("SELECT * FROM notes WHERE id = ?", (a["note_id"],))
+    db.execute("DELETE FROM step_notes WHERE id = ?", (annotation_id,))
+    return db.experiment_bundle(n["experiment_id"])
+
+
 @app.get("/api/transcription/status")
 def transcription_status():
     return transcribe.status()
@@ -595,15 +624,18 @@ def get_audio(recording_id: int):
 def lock_commitment(experiment_id: int, body: CommitmentIn):
     if not db.row("SELECT id FROM experiments WHERE id = ?", (experiment_id,)):
         raise HTTPException(404, "No such experiment")
-    for field in ("expected", "observed", "interpretation", "disconfirming"):
+    for field in ("observed", "interpretation"):
         if not getattr(body, field).strip():
-            raise HTTPException(422, f"'{field}' cannot be empty. This is the point of the step")
+            raise HTTPException(
+                422,
+                "You need what you saw and what you make of it. Everything else is optional.",
+            )
     cid = db.insert(
         """INSERT INTO commitments
-           (experiment_id, expected, observed, interpretation, confidence,
+           (experiment_id, aim, expected, observed, interpretation, confidence,
             disconfirming, proposed_next, locked_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (experiment_id, body.expected, body.observed, body.interpretation,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (experiment_id, body.aim, body.expected, body.observed, body.interpretation,
          body.confidence, body.disconfirming, body.proposed_next, db.now()),
     )
     return {"commitment_id": cid, "experiment": db.experiment_bundle(experiment_id)}
@@ -1193,6 +1225,11 @@ def decision_graph(project_id: int):
 @app.get("/api/projects/{project_id}/calibration")
 def calibration(project_id: int):
     scored = {"held": 1.0, "partly": 0.5, "overturned": 0.0}
+    have_conf = db.rows(
+        """SELECT c.id FROM commitments c JOIN experiments e ON e.id = c.experiment_id
+           WHERE e.project_id = ? AND c.confidence IS NOT NULL""",
+        (project_id,),
+    )
     buckets: dict[str, dict] = {}
     points = []
     resolved = db.rows(
@@ -1200,7 +1237,8 @@ def calibration(project_id: int):
            FROM commitments c
            JOIN experiments e ON e.id = c.experiment_id
            JOIN resolutions r ON r.commitment_id = c.id
-           WHERE e.project_id = ? AND r.verdict != 'unresolved'""",
+           WHERE e.project_id = ? AND r.verdict != 'unresolved'
+             AND c.confidence IS NOT NULL""",
         (project_id,),
     )
     for r in resolved:
@@ -1232,6 +1270,7 @@ def calibration(project_id: int):
         (project_id,),
     )
     return {
+        "tracked_confidence_n": len(have_conf),
         "resolved_n": len(points),
         "brier_score": brier,
         "buckets": buckets,

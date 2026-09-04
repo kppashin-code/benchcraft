@@ -115,9 +115,9 @@ class Divergence(BaseModel):
         description="The specific observation that would let them set that alternative aside."
     )
     confidence_note: str = Field(
-        description="Whether the confidence they stated is supportable given the evidence in their "
-        "own record. Say so if it looks too LOW as well as too high. Do not tell them what to "
-        "conclude."
+        description="If and only if they stated a confidence, say whether it is supportable given "
+        "the evidence in their own record, too low as well as too high. If they did not state one, "
+        "return an empty string. Never ask them to quantify their belief."
     )
 
 
@@ -325,9 +325,12 @@ def _record_text(exp: dict, commitment: dict, include_interpretation: bool,
         f"EXPERIMENT: {exp['title']}",
         f"QUESTION BEING ASKED: {exp['question'] or '(not stated)'}",
         f"EXPERIMENTAL CONTEXT:\n{ctx or '  (none recorded)'}",
-        f"WHAT THE RESEARCHER EXPECTED:\n{commitment['expected']}",
-        f"WHAT WAS OBSERVED:\n{commitment['observed']}",
     ]
+    if commitment.get("aim"):
+        parts.append(f"THE AIM, IN THEIR WORDS:\n{commitment['aim']}")
+    if commitment.get("expected"):
+        parts.append(f"WHAT THE RESEARCHER EXPECTED:\n{commitment['expected']}")
+    parts.append(f"WHAT WAS OBSERVED:\n{commitment['observed']}")
     steps = [n["body"] for n in exp.get("notes", []) if n.get("source") == "protocol"]
     if steps:
         parts.append(
@@ -343,11 +346,15 @@ def _record_text(exp: dict, commitment: dict, include_interpretation: bool,
             f"and transcribed verbatim; these are impressions, not measurements):\n{lines}"
         )
     if include_interpretation:
-        parts += [
-            f"THE RESEARCHER'S COMMITTED INTERPRETATION:\n{commitment['interpretation']}",
-            f"THEIR STATED CONFIDENCE: {commitment['confidence']}/100",
-            f"WHAT THEY SAID WOULD CHANGE THEIR MIND:\n{commitment['disconfirming']}",
-        ]
+        parts.append(
+            f"THE RESEARCHER'S COMMITTED INTERPRETATION:\n{commitment['interpretation']}"
+        )
+        if commitment.get("confidence") is not None:
+            parts.append(f"THEIR STATED CONFIDENCE: {commitment['confidence']}/100")
+        if commitment.get("disconfirming"):
+            parts.append(
+                f"WHAT THEY SAID WOULD CHANGE THEIR MIND:\n{commitment['disconfirming']}"
+            )
         if commitment.get("proposed_next"):
             parts.append(f"THE NEXT EXPERIMENT THEY PROPOSED:\n{commitment['proposed_next']}")
     hist = _history_text(history or [], folder)
@@ -446,8 +453,7 @@ def supervisor_brief(project: dict, experiments: list[dict]) -> str:
                 for r in ch["responses"]:
                     block += (
                         f"\n\nAFTER SEEING THE CHALLENGE, THE RESEARCHER {r['stance'].upper()} "
-                        f"THEIR POSITION (confidence {c['confidence']} to "
-                        f"{r['confidence_after']}). THEIR REASONING:\n{r['reasoning']}"
+                        f"THEIR POSITION. THEIR REASONING:\n{r['reasoning']}"
                     )
                     if r["chosen_next"]:
                         block += f"\nNEXT STEP THEY CHOSE:\n{r['chosen_next']}"
