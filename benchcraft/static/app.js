@@ -2111,4 +2111,16 @@ function drawCalc() {
 
 $("#btn-calc").onclick = openCalc;
 
+const NARROW = window.matchMedia("(max-width: 1080px)");
+function showPane(which) {
+  document.querySelectorAll(".wrap .pane").forEach(p =>
+    p.classList.toggle("showing", !NARROW.matches || p.classList.contains(which)));
+  document.querySelectorAll("#panebar .tab").forEach(t =>
+    t.classList.toggle("on", t.dataset.pane === which));
+}
+document.querySelectorAll("#panebar .tab").forEach(t =>
+  t.onclick = () => showPane(t.dataset.pane));
+NARROW.addEventListener("change", () => showPane(NARROW.matches ? "center" : "left"));
+if (NARROW.matches) showPane("center");
+
 boot();
