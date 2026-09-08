@@ -129,8 +129,8 @@ class PaperDigest(BaseModel):
     )
     experiments: list[str] = Field(
         description="The main experiments the authors actually ran, one per item, each naming the "
-        "system and the comparison. 'Encapsulated H9-derived organoids in fast vs slow-relaxing "
-        "alginate and compared TH+ fraction at day 40', not 'studied the effect of stiffness'."
+        "system and the comparison. 'Compared viability in HEK293 across an 8-point doxorubicin "
+        "series at 48 h by CellTiter-Glo', not 'studied the effect of the compound'."
     )
     methods: list[str] = Field(
         description="Key methods with the specifics a person would need to repeat them: cell "
@@ -227,10 +227,9 @@ term would mean
 - any statement about what the researcher's data show
 - any hedging or advice
 
-'TH' is 'tyrosine hydroxylase, the enzyme catalysing the rate-limiting step in \
-dopamine synthesis'. It is NOT 'a marker of mature dopaminergic identity, so \
-lower TH suggests impaired maturation'. The second sentence is the researcher's \
-to write, not yours.
+'ATP content' is 'the amount of adenosine triphosphate present in a sample'. \
+It is NOT 'a proxy for viable cell number, so a lower reading suggests cell \
+death'. The second sentence is the researcher's to write, not yours.
 
 Never use an em dash. Use a comma, a semicolon or a full stop instead.
 
@@ -259,8 +258,8 @@ to' an effect, do not upgrade it to 'causes'.
 3. No evaluation. Do not call a study elegant, robust, underpowered, seminal or \
 flawed. Report limitations only where the authors state them themselves.
 
-4. Concrete over abstract. 'Compared 2% and 4% w/v alginate at day 40, n=3 \
-wells' beats 'investigated the role of matrix concentration'.
+4. Concrete over abstract. 'Compared 1 uM and 10 uM doxorubicin at 48 h, n=3 \
+wells' beats 'investigated the role of compound concentration'.
 
 This digest exists so a researcher can find a paper again and recall its shape. \
 It is not a substitute for reading it."""

@@ -12,9 +12,9 @@ def main() -> None:
     pid = db.insert(
         "INSERT INTO projects (name, description, created_at) VALUES (?, ?, ?)",
         (
-            "Stress relaxation and midbrain organoid maturation",
-            "Does hydrogel stress-relaxation rate change dopaminergic maturation in "
-            "iPSC-derived midbrain organoids, independently of organoid size?",
+            "Plate position and compound response in a viability assay",
+            "Does compound MX-12 reduce viability in HEK293 cells, or does the apparent "
+            "dose response track where the wells sit on the plate?",
             db.now(),
         ),
     )
@@ -25,29 +25,27 @@ def main() -> None:
            VALUES (?, NULL, ?, ?, ?, ?)""",
         (
             pid,
-            "Fast vs slow-relaxing gel, day 40 maturation panel",
-            "Does a slower-relaxing matrix change dopaminergic maturation, or only change "
-            "how big the organoids get?",
+            "MX-12 dose response, first pass",
+            "Does MX-12 reduce viability at 10 uM, or is the apparent effect positional?",
             json.dumps({
-                "cell line": "SFC840-03-03 (control iPSC)",
-                "passage": "p31",
-                "hydrogel": "alginate-RGD, 2% w/v",
-                "stress relaxation": "fast (t½ ≈ 70 s) vs slow (t½ ≈ 900 s)",
-                "differentiation day": "d40",
-                "encapsulation density": "1 organoid per 20 µL bead",
-                "readout": "wholemount IF, TH / MAP2 / NURR1; n = 3 wells per arm",
+                "cell line": "HEK293",
+                "passage": "p14",
+                "plate": "96-well, clear bottom",
+                "compound": "MX-12, 8-point series, 0.1 to 10 uM",
+                "incubation": "48 h",
+                "layout": "doses in columns, vehicle control in column 1",
+                "readout": "CellTiter-Glo luminescence; n = 3 wells per dose",
             }),
             db.now(),
         ),
     )
 
     for note in [
-        "The slow-relaxing gel felt noticeably more viscous than the last batch, harder to "
-        "pipette, and organoids were harder to centre in the bead.",
-        "Line looked slightly unhealthy the morning of encapsulation; a few dark centres in "
-        "the fast-relaxing arm before it went in.",
-        "Slow arm beads sat lower in the well. Possible they were closer to the plastic and "
-        "got less medium exchange.",
+        "Outer wells looked to have less medium at 48 h, a visible meniscus difference "
+        "against the inner columns.",
+        "Plate sat closest to the incubator door and the door was opened several times "
+        "during the run.",
+        "Column 12 read brighter across every dose, including the vehicle wells.",
     ]:
         db.insert(
             "INSERT INTO notes (experiment_id, body, source, created_at) VALUES (?, ?, ?, ?)",
@@ -55,10 +53,10 @@ def main() -> None:
         )
 
     for term, plain in [
-        ("TH", "Tyrosine hydroxylase; the enzyme catalysing the rate-limiting step in dopamine synthesis."),
-        ("NURR1", "A nuclear receptor transcription factor, NR4A2, expressed in midbrain dopaminergic neurons."),
-        ("MAP2", "Microtubule-associated protein 2; a cytoskeletal protein found in neuronal dendrites."),
-        ("stress relaxation", "How quickly a material's resisting force decays when it is held at a fixed deformation."),
+        ("CellTiter-Glo", "A luminescent assay that estimates viable cell number from ATP content."),
+        ("edge effect", "Systematic differences in the outer wells of a microplate, usually caused by uneven evaporation."),
+        ("vehicle control", "Wells given the solvent alone, with no compound, used as the comparison baseline."),
+        ("IC50", "The concentration at which a response falls to half of its maximum."),
         ("passage", "The number of times a cell culture has been detached and reseeded into new vessels."),
     ]:
         db.insert(

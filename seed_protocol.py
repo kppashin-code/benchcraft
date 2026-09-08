@@ -2,114 +2,117 @@ import json
 
 from benchcraft import db
 
-FOLDER = "Midbrain DA differentiation"
+FOLDER = "MX-12 viability screen"
 
 PROTOCOL_STEPS = [
-    "d0: plate iPSC as single cells on laminin-521, dual SMAD inhibition begins",
-    "d1 to d9: SHH C25II and CHIR99021, patterning to floor plate identity",
-    "d11: replate onto laminin-111, switch to maturation medium",
-    "d16: FGF8b withdrawal, begin BDNF and GDNF",
-    "d25: first maturation checkpoint, expect TH and FOXA2 co-expression",
-    "d40: second checkpoint, TH / NURR1 / MAP2 panel by wholemount IF",
+    "d0: seed HEK293 at 5,000 cells per well in 100 uL, 96-well clear-bottom plate",
+    "d0: allow 4 h to attach before dosing",
+    "d0: dose MX-12 as an 8-point series, 0.1 to 10 uM, vehicle control in column 1",
+    "d1: visual check for evaporation in the outer columns",
+    "d2: 48 h endpoint, equilibrate the plate to room temperature for 30 min",
+    "d2: CellTiter-Glo, 10 min orbital shake, read luminescence",
 ]
 
 RUNS = [
     {
-        "title": "Run 1, baseline fast-relaxing gel",
+        "title": "Run 1, plate uniformity check",
         "created": "2026-06-12T09:00:00+00:00",
-        "question": "Does the standard protocol give TH+ yield in the published range?",
+        "question": "Does the assay give a uniform vehicle signal across the plate?",
         "context": {
-            "cell line": "SFC840-03-03 (control iPSC)",
-            "passage": "p26",
-            "hydrogel": "alginate-RGD, 2% w/v",
-            "stress relaxation": "fast (t half approx 70 s)",
-            "differentiation day": "d40",
-            "readout": "wholemount IF, TH / FOXA2 / MAP2; n = 3 wells",
+            "cell line": "HEK293",
+            "passage": "p12",
+            "plate": "96-well, clear bottom",
+            "compound": "vehicle only",
+            "incubation": "48 h",
+            "readout": "CellTiter-Glo luminescence; all 96 wells",
         },
         "notes": [
-            "Gel handled normally. Beads sat centred in the well.",
-            "Two wells had a few dark centres at d30 but they cleared by d35.",
+            "Plate ran on the lower shelf, near the incubator door.",
+            "Outer columns looked to have slightly less medium at the endpoint.",
         ],
-        "expected": "TH+ fraction around 20 percent at d40, in line with the protocol paper.",
-        "observed": "TH+ 19 percent, FOXA2 co-expression high. Organoid diameter approx 480 um.",
-        "interpretation": "The protocol is working as published in our hands.",
-        "confidence": 80,
-        "disconfirming": "If a repeat gave TH+ below 12 percent I would suspect our patterning.",
+        "expected": "Vehicle signal should be flat across all columns.",
+        "observed": "Vehicle signal approx 12 percent lower in the outer columns, 1 and 12.",
+        "interpretation": "The assay works, with a mild edge effect I can handle by excluding "
+                          "the outer columns.",
+        "confidence": 75,
+        "disconfirming": "If the gap persists after excluding the outer columns, it is not position.",
         "verdict": "held",
-        "resolution_note": "Repeat at p28 gave 18 percent. Baseline is solid.",
+        "resolution_note": "Excluding the outer columns flattened vehicle signal to within 3 percent.",
     },
     {
-        "title": "Run 2, first slow-relaxing arm",
+        "title": "Run 2, first dose response",
         "created": "2026-07-03T09:00:00+00:00",
-        "question": "Does slower stress relaxation change dopaminergic maturation?",
+        "question": "Does MX-12 reduce viability, and at what concentration?",
         "context": {
-            "cell line": "SFC840-03-03 (control iPSC)",
-            "passage": "p29",
-            "hydrogel": "alginate-RGD, 2% w/v",
-            "stress relaxation": "fast (t half approx 70 s) vs slow (t half approx 900 s)",
-            "differentiation day": "d40",
-            "readout": "wholemount IF, TH / FOXA2 / MAP2; n = 3 wells per arm",
+            "cell line": "HEK293",
+            "passage": "p14",
+            "plate": "96-well, clear bottom",
+            "compound": "MX-12, 8-point series, 0.1 to 10 uM",
+            "incubation": "48 h",
+            "layout": "doses in columns, ascending left to right",
+            "readout": "CellTiter-Glo luminescence; n = 3 wells per dose",
         },
         "notes": [
-            "Slow gel was harder to pipette than the fast one. Noticeably thicker.",
-            "Slow arm beads sat lower in the well.",
-            "Slow arm organoids looked larger by eye before fixing.",
+            "Same shelf position as run 1.",
+            "Highest doses sat in the rightmost columns, at the plate edge.",
+            "Outer columns again looked low on medium at the endpoint.",
         ],
-        "expected": "Slower relaxation should improve maturation, so higher TH+.",
-        "observed": "Slow arm organoids approx 40 percent larger by area. TH+ 13 percent slow "
-                    "vs 19 percent fast. FOXA2 similar in both.",
-        "interpretation": "Slow relaxation permits more growth, and the larger organoids develop "
-                          "hypoxic cores that limit maturation.",
+        "expected": "A dose-dependent drop in signal if MX-12 is active.",
+        "observed": "Clear dose response, apparent IC50 near 2 uM. Strongest apparent killing "
+                    "in the highest-dose columns, which sat at the plate edge.",
+        "interpretation": "MX-12 reduces viability with an IC50 around 2 uM.",
         "confidence": 65,
-        "disconfirming": "If TH+ tracks organoid size within each arm, it is size and not stiffness.",
+        "disconfirming": "If randomising dose position across the plate moves the IC50, the "
+                         "effect is positional.",
         "verdict": "partly",
-        "resolution_note": "Size-matching removed most but not all of the difference.",
+        "resolution_note": "Randomising the layout shifted the IC50 to about 6 uM.",
     },
     {
-        "title": "Run 3, size-matched repeat",
+        "title": "Run 3, randomised layout",
         "created": "2026-07-29T09:00:00+00:00",
-        "question": "With organoids size-matched at encapsulation, does the stiffness effect survive?",
+        "question": "With dose position randomised, does the potency estimate survive?",
         "context": {
-            "cell line": "SFC840-03-03 (control iPSC)",
-            "passage": "p31",
-            "hydrogel": "alginate-RGD, 2% w/v",
-            "stress relaxation": "fast (t half approx 70 s) vs slow (t half approx 900 s)",
-            "differentiation day": "d40",
-            "readout": "wholemount IF, TH / FOXA2 / MAP2; n = 4 wells per arm",
+            "cell line": "HEK293",
+            "passage": "p16",
+            "plate": "96-well, clear bottom",
+            "compound": "MX-12, 8-point series, 0.1 to 10 uM",
+            "incubation": "48 h",
+            "layout": "doses randomised across the plate, outer columns filled with buffer",
+            "readout": "CellTiter-Glo luminescence; n = 4 wells per dose",
         },
         "notes": [
-            "Sorted organoids to 300 to 350 um before encapsulation.",
-            "Slow gel thick again. Same batch of alginate as run 2.",
-            "Slow arm beads sat low in the well again.",
+            "Outer columns filled with buffer this time, not cells.",
+            "Same MX-12 stock as run 2.",
+            "Plate on the lower shelf again.",
         ],
-        "expected": "If it was purely size, TH+ should now match between arms.",
-        "observed": "TH+ 16 percent slow vs 19 percent fast. Gap narrowed but did not close. "
-                    "Diameters matched within 8 percent at d40.",
-        "interpretation": "Most of the original effect was size, but a small stiffness effect "
+        "expected": "If the run 2 potency was purely positional, the dose response should flatten.",
+        "observed": "IC50 approx 6 uM. Effect smaller than run 2 but still present.",
+        "interpretation": "Most of the original potency was plate position, but a real effect "
                           "remains.",
         "confidence": 55,
-        "disconfirming": "If a fresh alginate lot removes the residual gap, it was the material "
-                         "and not the mechanics.",
+        "disconfirming": "If a fresh compound stock removes the residual effect, it was the "
+                         "stock and not the compound.",
         "verdict": "unresolved",
         "resolution_note": "",
     },
 ]
 
 CURRENT = {
-    "title": "Run 4, new alginate lot",
-    "question": "Does the residual gap survive a fresh alginate lot?",
+    "title": "Run 4, fresh compound stock",
+    "question": "Does the residual effect survive a fresh MX-12 stock?",
     "context": {
-        "cell line": "SFC840-03-03 (control iPSC)",
-        "passage": "p33",
-        "hydrogel": "alginate-RGD, 2% w/v, lot B",
-        "stress relaxation": "fast (t half approx 70 s) vs slow (t half approx 900 s)",
-        "differentiation day": "d40",
-        "readout": "wholemount IF, TH / FOXA2 / MAP2; n = 4 wells per arm",
+        "cell line": "HEK293",
+        "passage": "p18",
+        "plate": "96-well, clear bottom",
+        "compound": "MX-12, fresh stock, lot B, 8-point series, 0.1 to 10 uM",
+        "incubation": "48 h",
+        "layout": "doses randomised across the plate, outer columns filled with buffer",
+        "readout": "CellTiter-Glo luminescence; n = 4 wells per dose",
     },
     "notes": [
-        "New alginate lot. Slow gel felt thinner than the last two runs, easier to pipette.",
-        "Beads sat centred this time, in both arms.",
-        "Line looked slightly unhealthy the morning of encapsulation.",
+        "New MX-12 stock, prepared the same morning.",
+        "Randomised layout again, same as run 3.",
+        "Plate sat mid-shelf this time, not by the door.",
     ],
 }
 
