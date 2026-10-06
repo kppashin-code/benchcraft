@@ -208,8 +208,9 @@ function listUploaded(pid) {
     .map((r) => { const it = uploadedItem(`upload:${r.id}`); return { ...it, has_digest: dg.has(it.key), has_my_note: nt.has(it.key) }; });
 }
 
-function getPaper(key) {
-  const it = uploadedItem(key) || fail("Not found in your uploads. Zotero items need the Zotero connection.");
+async function getPaper(key) {
+  let it = uploadedItem(key);
+  if (!it) { it = await zot("zotero_item", { key }); if (!it || !it.key) fail("Not found in your library or uploads"); }
   const d = all("paper_digest").find((x) => x.zotero_key === key) || null;
   const note = all("paper_note").find((x) => x.zotero_key === key);
   return { item: it, digest: d, my_note: note ? note.body : "" };
@@ -512,9 +513,27 @@ route("GET", "/experiments/{id}/literature/suggest", ({ id }) => {
 });
 route("POST", "/literature/search", () => fail("Searching Europe PMC from inside Claude needs a literature connector on your Claude account. Until then, use Suggest from record and paste the query into europepmc.org."));
 
-route("GET", "/zotero/status", () => ({ ready: false, detail: "Zotero is read through a small helper on your Mac, connected in the Claude desktop app. It is not set up yet." }));
-route("GET", "/zotero/collections", () => []);
-route("GET", "/zotero/items", () => []);
+// Zotero is read off disk by benchcraft/zotero_mcp.py, reached through the Claude desktop app.
+const ZOTERO = "host:benchcraft-zotero";
+async function zot(tool, args = {}) {
+  const m = window.claude ? await window.claude.use("mcp") : null;
+  if (!m) fail("Zotero is reached through the Claude desktop app. Open Benchcraft there.");
+  try {
+    const r = await m.callTool(ZOTERO, tool, args);
+    return r.payload ?? JSON.parse(r.content?.[0]?.text || "null");
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    if (e.code === "server_not_connected") fail("The Zotero helper is not running. Open Benchcraft in the Claude desktop app, where the helper is set up.");
+    if (e.code === "not_granted" || e.code === "approval_required") fail("Benchcraft was not allowed to read Zotero in this view. Allow it from the artifact's permissions menu.");
+    fail(`Zotero could not be read (${e.code || e.message}).`);
+  }
+}
+const withFlags = (items) => { const dg = digestKeys(), nt = notedKeys(); return items.map((it) => ({ ...it, has_digest: dg.has(it.key), has_my_note: nt.has(it.key) })); };
+route("GET", "/zotero/status", async () => {
+  try { return await zot("zotero_status"); } catch (e) { return { ready: false, detail: e.message }; }
+});
+route("GET", "/zotero/collections", async () => (await zot("zotero_collections")).collections || []);
+route("GET", "/zotero/items", async (_, __, q) => withFlags((await zot("zotero_items", { collection: q.get("collection") || "", engaged_only: q.get("engaged_only") === "true" })).items || []));
 
 route("POST", "/projects/{pid}/papers/upload", () => fail("Use the upload box."));
 route("GET", "/projects/{pid}/papers/uploaded", ({ pid }) => listUploaded(pid));
@@ -527,17 +546,24 @@ route("DELETE", "/uploaded_papers/{id}", async ({ id }) => {
 route("GET", "/papers/{key}", ({ key }) => getPaper(decodeURIComponent(key)));
 route("POST", "/papers/{key}/digest", async ({ key }) => {
   key = decodeURIComponent(key);
-  const it = uploadedItem(key) || fail("Only uploaded PDFs can be digested until Zotero is connected.");
-  const r = get("uploaded_paper", key.split(":")[1]);
-  let text;
-  try {
-    const { pages } = await pdfText(await (await fetch(fileUrl(r))).blob());
-    text = cleanText(pages.join("\n")).trim().slice(0, 60000);
-  } catch (e) { if (e instanceof HttpError) throw e; fail(`Could not read that PDF: ${e.message}`); }
-  if (text.length < 400) fail("That PDF has no extractable text. It may be a scan.");
-  const d = await ask(P.digestInput(it.title, text, `full text, ${r.filename}`), { check: P.checkDigest });
+  let it = uploadedItem(key), text, source;
+  if (it) {
+    const r = get("uploaded_paper", key.split(":")[1]);
+    if (!r.asset_id) fail("This paper came across without its PDF. Drop the PDF in again to digest it.");
+    try {
+      const { pages } = await pdfText(await (await fetch(fileUrl(r))).blob());
+      text = cleanText(pages.join("\n")).trim().slice(0, 60000);
+    } catch (e) { if (e instanceof HttpError) throw e; fail(`Could not read that PDF: ${e.message}`); }
+    if (text.length < 400) fail("That PDF has no extractable text. It may be a scan.");
+    source = `full text, ${r.filename}`;
+  } else {
+    it = await zot("zotero_item", { key });
+    if (!it || !it.key) fail("Not in your Zotero library");
+    ({ text, source } = await zot("zotero_text", { key }));
+  }
+  const d = await ask(P.digestInput(it.title, text, source), { check: P.checkDigest });
   const old = all("paper_digest").find((x) => x.zotero_key === key);
-  const fields = { zotero_key: key, main_claim: d.main_claim, experiments: d.experiments || [], methods: d.methods || [], limitations: d.limitations || [], source: `full text, ${r.filename}`, model: "claude.ai, complex tier", created_at: now() };
+  const fields = { zotero_key: key, main_claim: d.main_claim, experiments: d.experiments || [], methods: d.methods || [], limitations: d.limitations || [], source, model: "claude.ai, complex tier", created_at: now() };
   if (old) await upd(old, fields); else await ins("paper_digest", fields);
   return getPaper(key);
 });
