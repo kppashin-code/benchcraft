@@ -698,7 +698,7 @@ function renderEarly() {
 
 function renderChallengeGate() {
   if (!AI) return `<div class="card"><div class="gate">Your view is on the record.<br>
-    <span class="small">Turn on AI help in the header if you want it challenged.</span></div></div>`;
+    <span class="small">Turn on agentic help in the header if you want it challenged.</span></div></div>`;
   return `<div class="card">
     <div class="gate">
       Your view is on the record.<br>
@@ -1003,8 +1003,8 @@ function renderRefRail() {
     </div>
     <div class="ref-state ${AI ? "" : "wait"}">
       ${AI
-        ? "AI help is on. Definitions, scans and challenges are there whenever you want them."
-        : "AI help is off. Your own glossary works as normal; turn AI help on in the header for definitions and scans."}
+        ? "Agentic help is on. Definitions, scans and challenges are there whenever you want them."
+        : "Agentic help is off. Your own glossary works as normal; turn agentic help on in the header for definitions and scans."}
     </div>
     <div class="ref-body">
       <div class="ref-count">${shown.length} term${shown.length === 1 ? "" : "s"} recognised</div>
@@ -1493,7 +1493,7 @@ function drawPaper(p) {
         It will not tell you what this means for your experiment. That reading is yours.</div>
       </div>
       <button class="ghost sm" id="p-redigest">Regenerate</button>`
-    : !AI ? `<div class="small muted">Turn on AI help in the header to have this paper digested.</div>`
+    : !AI ? `<div class="small muted">Turn on agentic help in the header to have this paper digested.</div>`
     : `<div class="gate">
         <button class="ai" id="p-digest">Digest this paper</button>
         <div class="tiny" style="margin-top:10px;max-width:46ch;margin-inline:auto">
@@ -2238,12 +2238,12 @@ document.querySelectorAll("#panebar .tab").forEach(t =>
 NARROW.addEventListener("change", () => showPane(NARROW.matches ? "center" : "left"));
 if (NARROW.matches) showPane("center");
 
-// AI help is opt-in; when it is on, nothing waits for a locked view.
+// Agentic help is opt-in; when it is on, nothing waits for a locked view.
 function paintAi() {
   const b = $("#btn-ai");
   b.classList.toggle("ai-on", AI);
   b.setAttribute("aria-pressed", String(AI));
-  b.textContent = AI ? "AI help: on" : "AI help: off";
+  b.textContent = AI ? "Agentic help: on" : "Agentic help: off";
   $("#btn-brief").hidden = !AI;
 }
 $("#btn-ai").onclick = async () => {
