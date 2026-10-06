@@ -37,6 +37,7 @@ export function bundle(recs, expId) {
     connector_calls: of("connector_call", "experiment_id", expId).sort(byTime("created_at"))
       .map((cc) => ({ ...strip(cc), connector_name: (connectors.get(cc.connector_id) || {}).name })).filter((cc) => cc.connector_name),
     commitments,
+    figures: of("figure", "experiment_id", expId).sort(byTime("created_at")).map(strip),
     cell_events: of("line_event", "experiment_id", expId).sort(byTime("created_at")).map((ev) => ({
       ...strip(ev), line_name: (recs.find((r) => r._t === "cell_line" && r.id === ev.cell_line_id) || {}).name || "",
     })),

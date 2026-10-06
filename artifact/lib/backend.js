@@ -100,6 +100,7 @@ async function dropFile(id) {
   if (!id) return;
   try { const a = await window.claude?.use("assets"); if (a) await a.delete(id); } catch { /* already gone */ }
 }
+export const figureUrl = (f) => (f && f.asset_id ? "/_blob/" + f.asset_id : "");
 export const fileUrl = (rec) => (rec && rec.asset_id ? "/_blob/" + rec.asset_id : "");
 
 export async function download(rec) {
@@ -871,7 +872,11 @@ route("POST", "/projects/{pid}/slides", async ({ pid }, b) => {
   const scope = b.experiment_id ? exps[0].title : b.folder_id ? (get("folder", b.folder_id) || {}).name : project.name;
   const deck = await ask(P.slidesInput(scope, exps), { check: P.checkSlides });
   const labels = new Map(exps.flatMap((e) => e.datasets).map((d) => [d.label || d.filename, d]));
+  const figs = new Map(exps.flatMap((e) => e.figures || []).map((f) => [f.caption, f]));
   for (const s of deck.slides) {
+    const fig = s.figure && figs.get(s.figure);
+    s.figure = fig ? { id: fig.id, url: fileUrl(fig), caption: fig.caption, source: `${fig.repo}/${fig.path}` } : null;
+    if (s.figure) { s.chart = null; continue; }
     const want = s.chart && s.chart.dataset && labels.get(s.chart.dataset);
     if (!want) { s.chart = null; continue; }
     const cols = (s.chart.columns || []).filter((c) => (want.columns || []).some((x) => x.name === c && x.numeric)).slice(0, 4);
@@ -884,6 +889,22 @@ route("POST", "/slides/to_drive", async (_, b) => {
   const f = await drive("create_file", { title: b.title || "Benchcraft slides", base64Content: b.base64, contentMimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation" });
   return { id: f.id, url: f.viewUrl || "" };
 });
+
+// ---------- figures from GitHub, fetched by the local helper ----------
+
+route("GET", "/github/repos", async () => (await zot("github_repos")).repos || []);
+route("GET", "/github/figures", async (_, __, q) => zot("github_figures", { repo: q.get("repo") || "", under: q.get("under") || "" }));
+route("POST", "/experiments/{id}/figures", async ({ id }, b) => {
+  const e = need("experiment", id, "experiment");
+  const f = await zot("github_figure", { repo: b.repo, path: b.path });
+  const bytes = Uint8Array.from(atob(f.base64), (c) => c.charCodeAt(0));
+  const name = b.path.split("/").pop();
+  const asset = await putFile(new File([bytes], name, { type: f.mime }));
+  await ins("figure", { experiment_id: e.id, asset_id: asset.id, repo: f.repo, path: f.path, sha: f.sha, url: f.url, caption: name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ") });
+  return exp(e.id);
+});
+route("PUT", "/figures/{id}", async ({ id }, b) => { const f = need("figure", id); await upd(f, { caption: String(b.caption || "").trim() || f.caption }); return exp(f.experiment_id); });
+route("DELETE", "/figures/{id}", async ({ id }) => { const f = need("figure", id); await dropFile(f.asset_id); await del(f); return exp(f.experiment_id); });
 
 async function R_get(path) { return api(path); }
 

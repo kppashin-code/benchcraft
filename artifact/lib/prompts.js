@@ -208,7 +208,7 @@ You are a compiler, not an author. Every claim on a slide must be traceable to t
 
 Use the researcher's own words where you can. Short bullets, at most five a slide, at most fifteen words a bullet. Never use an em dash.
 
-When an attached dataset has a numeric column worth showing, you may ask for a chart: name the dataset label exactly as given and one to four numeric column names exactly as given. The page draws the chart from the real file; never write numbers into a chart yourself.`;
+When an attached figure illustrates a slide, name it by its exact caption. When an attached dataset has a numeric column worth showing, you may ask for a chart: name the dataset label exactly as given and one to four numeric column names exactly as given. The page draws the chart from the real file; never write numbers into a chart yourself.`;
 
 const SLIDES_SHAPE = {
   title: "Deck title, under ten words.",
@@ -216,6 +216,7 @@ const SLIDES_SHAPE = {
   slides: [{
     title: "Slide title, under eight words.",
     bullets: ["Short bullet in the researcher's voice."],
+    figure: "Exact caption of one attached figure to show on this slide, or empty string. Prefer a figure over a chart when one fits.",
     chart: { dataset: "Exact dataset label, or empty string for no chart.", columns: ["Exact numeric column names, empty list for no chart."], kind: "'bar' for comparing columns' means, 'line' for a series in row order." },
     notes: "Speaker notes: two or three sentences the researcher could say, from the record only.",
   }],
@@ -235,6 +236,7 @@ export function slidesInput(title, experiments) {
     }
     const d = dataText(exp);
     if (d) parts.push(d);
+    if ((exp.figures || []).length) parts.push("FIGURES ATTACHED (images from the researcher's own code):\n" + exp.figures.map((f) => `  - ${f.caption}`).join("\n"));
     return parts.join("\n");
   });
   return join(SLIDES_SYSTEM, `DECK FOR: ${title}\n\n=== THE RECORD ===\n\n` + blocks.join("\n\n---\n\n"), SLIDES_SHAPE);

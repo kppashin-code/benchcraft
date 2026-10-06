@@ -6,7 +6,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
+import base64
+import json
 import re
+import shutil
+import subprocess
 
 from benchcraft import literature, zotero
 
@@ -72,6 +76,52 @@ def literature_search(query: str, include_preprints: bool = False, reviews_only:
         r["in_my_library"] = bool(r["doi"]) and r["doi"].lower() in have
     out["library_matches"] = _matches(query, lib)
     return out
+
+
+OWNER = "kppashin-code"
+IMAGES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".svg": "image/svg+xml", ".gif": "image/gif", ".webp": "image/webp"}
+GH = shutil.which("gh") or "/opt/homebrew/bin/gh"
+
+
+def _gh(path: str):
+    out = subprocess.run([GH, "api", path], capture_output=True, text=True, timeout=90)
+    if out.returncode:
+        raise RuntimeError(out.stderr.strip() or "gh api failed")
+    return json.loads(out.stdout)
+
+
+def _full(repo: str) -> str:
+    return repo if "/" in repo else f"{OWNER}/{repo}"
+
+
+@server.tool(annotations=OPEN, description="Your GitHub repositories, most recently updated first.")
+def github_repos() -> dict:
+    rows = _gh("user/repos?per_page=100&sort=updated&affiliation=owner")
+    return {"repos": [{"name": r["name"], "full_name": r["full_name"], "private": r["private"], "updated": r["updated_at"][:10],
+                       "description": r.get("description") or "", "branch": r["default_branch"]} for r in rows]}
+
+
+@server.tool(annotations=OPEN, description="Image files (figures) in one repository, optionally under a folder.")
+def github_figures(repo: str, under: str = "") -> dict:
+    full = _full(repo)
+    branch = _gh(f"repos/{full}")["default_branch"]
+    tree = _gh(f"repos/{full}/git/trees/{branch}?recursive=1")
+    under = under.strip("/")
+    figs = [{"path": t["path"], "size": t.get("size", 0), "sha": t["sha"]} for t in tree.get("tree", [])
+            if t["type"] == "blob" and any(t["path"].lower().endswith(x) for x in IMAGES)
+            and (not under or t["path"].startswith(under + "/")) and t.get("size", 0) <= 15_000_000]
+    figs.sort(key=lambda f: f["path"])
+    return {"repo": full, "branch": branch, "figures": figs[:400], "truncated": len(figs) > 400}
+
+
+@server.tool(annotations=OPEN, description="One figure from a repository, as base64, with a link back to it on GitHub.")
+def github_figure(repo: str, path: str) -> dict:
+    full = _full(repo)
+    meta = _gh(f"repos/{full}/contents/{path}")
+    data = meta.get("content") or _gh(f"repos/{full}/git/blobs/{meta['sha']}")["content"]
+    ext = "." + path.rsplit(".", 1)[-1].lower()
+    return {"repo": full, "path": path, "sha": meta["sha"], "mime": IMAGES.get(ext, "application/octet-stream"),
+            "url": meta.get("html_url", ""), "base64": data.replace("\n", "")}
 
 
 if __name__ == "__main__":

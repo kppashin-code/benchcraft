@@ -44,6 +44,7 @@ function preview() {
     <p class="small muted" style="margin-top:-6px">${esc(DECK.subtitle || "")}</p>
     <ol class="sl-list">${DECK.slides.map((s) => `<li><strong>${esc(s.title)}</strong>
       <ul class="ev pro">${s.bullets.map((b) => `<li>${esc(b)}</li>`).join("")}</ul>
+      ${s.figure ? `<div class="tiny muted">Figure: ${esc(s.figure.caption)}</div>` : ""}
       ${s.chart ? `<div class="tiny muted">Chart: ${esc(s.chart.columns.join(", "))} from ${esc(s.chart.dataset)}</div>` : ""}</li>`).join("")}</ol>
     <div class="row" style="margin-top:14px;flex-wrap:wrap">
       <button id="sl-drive">Save to Google Drive</button>
@@ -106,12 +107,24 @@ async function build() {
     sl.background = { color: PAPER };
     sl.addText(s.title, { ...head, x: 0.6, y: 0.35, w: 12.1, h: 0.9, fontSize: 28 });
     sl.addShape(pptx.ShapeType.line, { x: 0.6, y: 1.25, w: 12.1, h: 0, line: { color: LINE, width: 1 } });
-    const hasChart = !!s.chart;
+    const hasChart = !!s.chart || !!s.figure;
     if (s.bullets.length) {
       sl.addText(s.bullets.map((b) => ({ text: b, options: { bullet: { indent: 18 }, paraSpaceAfter: 8 } })),
         { ...body, x: 0.6, y: 1.5, w: hasChart ? 5.8 : 12.1, h: 5.2, fontSize: 18, valign: "top" });
     }
-    if (hasChart) {
+    if (s.figure) {
+      try {
+        const blob = await (await fetch(s.figure.url)).blob();
+        const data = await new Promise((r) => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(blob); });
+        const dims = await new Promise((r) => { const im = new Image(); im.onload = () => r([im.naturalWidth, im.naturalHeight]); im.onerror = () => r([4, 3]); im.src = data; });
+        const box = { w: 6.0, h: 4.9 }, ratio = dims[0] / dims[1];
+        const w = Math.min(box.w, box.h * ratio), h = w / ratio;
+        sl.addImage({ data, x: 6.7 + (box.w - w) / 2, y: 1.5 + (box.h - h) / 2, w, h });
+        sl.addText(s.figure.source, { ...body, color: INK2, x: 6.7, y: 6.45, w: 6.0, h: 0.35, fontSize: 10 });
+      } catch (e) {
+        sl.addText(`Figure not placed: ${e.message}`, { ...body, color: INK2, x: 6.7, y: 1.5, w: 6.0, h: 0.5, fontSize: 12 });
+      }
+    } else if (hasChart) {
       try {
         const data = await chartData(s.chart);
         sl.addChart(s.chart.kind === "line" ? pptx.ChartType.line : pptx.ChartType.bar, data, {

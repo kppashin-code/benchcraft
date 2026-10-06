@@ -584,6 +584,15 @@
   .ln-body { padding: 10px 14px 6px 32px; }
   .ln-ev { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 5px 0; border-top: 1px solid var(--rule); }
   .ln-date { font: 12px var(--mono); color: var(--ink-2); min-width: 86px; }
+  .figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-top: 12px; }
+  .fig { margin: 0; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; background: #fbfdfb; }
+  .fig img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; display: block; background: #fbfdfb; }
+  .fig figcaption { padding: 8px 10px; background: var(--raised); display: grid; gap: 4px; }
+  .fig figcaption input { padding: 5px 7px; font-size: 13px; border-color: transparent; }
+  .fig figcaption input:hover { border-color: var(--rule-strong); }
+  .gh-files { display: grid; gap: 4px; max-height: 55vh; overflow: auto; }
+  .gh-file { display: flex; justify-content: space-between; gap: 10px; text-align: left; background: var(--raised); color: var(--ink); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 12px; font: 13px var(--mono); }
+  .gh-file:hover { border-color: var(--teal); opacity: 1; }
   .sl-list { padding-left: 20px; display: grid; gap: 10px; margin: 8px 0 0; }
 
   .lowbadge { font: 600 11px var(--ui); background: var(--amber-soft); color: var(--amber); border: 1px solid var(--amber-line); padding: 1px 7px; border-radius: 999px; }

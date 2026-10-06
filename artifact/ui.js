@@ -80,21 +80,7 @@ function inkSvg(rec) {
   </svg>`;
 }
 
-const STAGE_ORDER = ["notice", "commit", "challenge", "decide"];
 
-const STAGE_ICON = {
-  notice: `<svg viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="1.6"
-    stroke-linecap="round"><path d="M1 7h9"/><circle cx="14.5" cy="7" r="2.6"/></svg>`,
-  commit: `<svg viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="1.6"
-    stroke-linecap="round"><path d="M1 7h11"/><path d="M15.5 2.2v9.6"/></svg>`,
-  challenge: `<svg viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="1.6"
-    stroke-linecap="round"><path d="M1 7h5"/><path d="M6 7c4 0 4-5 8-5"/><path d="M6 7h8"/>
-    <path d="M6 7c4 0 4 5 8 5"/></svg>`,
-  decide: `<svg viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="1.6"
-    stroke-linecap="round"><path d="M1 7h5"/><path d="M6 7c4 0 4-5 8-5" opacity=".2"/>
-    <path d="M6 7c4 0 4 5 8 5" opacity=".2"/><path d="M6 7h9" stroke-width="2.4"/>
-    <circle cx="17" cy="7" r="2" fill="currentColor" stroke="none"/></svg>`,
-};
 
 async function api(path, method = "GET", body) {
   return B.api(path, method, body);
@@ -114,40 +100,6 @@ function askText(question) {
     $("#ask-a").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); done($("#ask-a").value.trim() || null); } };
     dlg.oncancel = () => resolve(null);
   });
-}
-
-// Press and hold to lock, so committing a view is a deliberate act.
-function holdToLock(btn, onDone) {
-  const ms = 1100;
-  let start = 0, raf = 0;
-  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const set = (p) => btn.style.setProperty("--p", p);
-  const cancel = () => { if (raf) cancelAnimationFrame(raf); raf = 0; set(0); };
-  const tick = (t) => {
-    const p = Math.min(1, (t - start) / ms);
-    set(reduce ? (p < 1 ? 0 : 1) : p);
-    if (p >= 1) { raf = 0; set(0); onDone(); return; }
-    raf = requestAnimationFrame(tick);
-  };
-  const begin = (e) => {
-    if (btn.disabled || raf || (e.type === "keydown" && e.key !== " " && e.key !== "Enter") || e.repeat) return;
-    e.preventDefault();
-    start = performance.now();
-    raf = requestAnimationFrame(tick);
-  };
-  btn.addEventListener("pointerdown", begin);
-  btn.addEventListener("keydown", begin);
-  for (const ev of ["pointerup", "pointerleave", "pointercancel", "keyup", "blur"]) btn.addEventListener(ev, cancel);
-}
-
-function inCycle(exp) { return exp && exp.mode === "cycle"; }
-
-function stageOf(exp) {
-  if (!exp || !exp.commitments || !exp.commitments.length) return "notice";
-  const c = exp.commitments[exp.commitments.length - 1];
-  if (!c.challenges.length) return "commit";
-  const ch = c.challenges[c.challenges.length - 1];
-  return ch.responses.length ? "decide" : "challenge";
 }
 
 async function boot() {
@@ -188,13 +140,12 @@ function renderLog() {
   LOG.forEach(e => groups.get(groups.has(e.folder_id) ? e.folder_id : null).push(e));
 
   const item = (e) => {
-    const st = e.mode === "cycle" ? (e.stage || "notice") : "entry";
     return `<div class="log-item ${EXP && e.id === EXP.id ? "on" : ""}"
       draggable="true" data-id="${e.id}">
       <div class="t">${esc(e.title)}</div>
       <div class="log-meta">
-        <span class="badge ${st}">${st}</span>
         <span class="date">${e.created_at.slice(0, 10)}</span>
+        ${e.commitment_count ? `<span class="date">reading</span>` : ""}
         ${e.recording_count ? `<span class="date">${e.recording_count} voice</span>` : ""}
       </div>
       <button class="trash" data-delexp="${e.id}" title="Delete this entry">${TRASH}</button>
@@ -302,23 +253,7 @@ function renderLog() {
 
 function renderStages() {
   $("#now-title").textContent = EXP ? EXP.title : "";
-  if (!inCycle(EXP)) {
-    $("#stages").innerHTML = EXP
-      ? `<button class="ghost sm" id="btn-cycle">Put this through the cycle</button>`
-      : "";
-    const b = $("#btn-cycle");
-    if (b) b.onclick = async () => {
-      EXP = await api(`/experiments/${EXP.id}/mode`, "PUT", { mode: "cycle" });
-      render(); renderStages(); reloadLog();
-    };
-    return;
-  }
-  const at = STAGE_ORDER.indexOf(stageOf(EXP));
-  $("#stages").innerHTML = STAGE_ORDER.map((s, i) => {
-    const cls = i < at ? "done" : i === at ? "now" : "";
-    return `<div class="stage ${cls}"><span class="num">${pad2(i + 1)}</span>${
-      STAGE_ICON[s]}${s}</div>`;
-  }).join(`<span class="stage-arrow">&rarr;</span>`);
+  $("#stages").innerHTML = "";
 }
 
 async function openExperiment(id) {
@@ -363,11 +298,7 @@ function render() {
   const resp = ch && ch.responses[ch.responses.length - 1] || null;
   const ctx = Object.entries(EXP.context || {});
 
-  const cycle = inCycle(EXP);
-  const banner = cycle && c ? `<div class="banner">${LOCK_SHUT}Your view is on the record.</div>` : "";
-
   $("#main").innerHTML = `
-    ${banner}
     <div class="card">
       <h2>${esc(EXP.title)}</h2>
       ${EXP.question ? `<div class="qline"><b>Q:</b> ${esc(EXP.question)}</div>` : ""}
@@ -417,37 +348,22 @@ function render() {
       ${EXP.cell_events.map(e => `<div class="small" style="margin-bottom:5px"><strong>${esc(e.line_name)}</strong>
         ${esc(e.type)}${e.passage ? `, P${esc(e.passage)}` : ""}${e.note ? `, ${esc(e.note)}` : ""}
         <span class="muted tiny">${esc(e.date || e.created_at.slice(0, 10))}</span></div>`).join("")}</div>` : ""}
+    ${renderFigures()}
     ${renderInk()}
     ${renderLinkedPapers()}
     ${renderConnectorOutput()}
-    ${renderEarly()}
-    ${cycle
-      ? `${c ? renderCommitment(c) : renderCommitForm()}
-         ${c ? (ch ? renderChallenge(ch, c, resp) : renderChallengeGate()) : ""}
-         ${c ? renderResolution(c, resp) : ""}`
-      : renderCycleOffer()}
+    ${renderReading(c)}
+    ${c ? renderResolution(c, resp) : ""}
+    ${renderSecondOpinion()}
   `;
   wire(c, ch);
-}
-
-function renderCycleOffer() {
-  return `<div class="card">
-    <h3>This is a plain notebook entry</h3>
-    <p class="small muted" style="margin-top:-4px">Record whatever you like here. Nothing is
-    gated and no model sees any of it.</p>
-    <p class="small" style="margin-top:10px">If you want this one argued with, put it through
-    the cycle. You will write what you expected, what you saw, what you think it means and how
-    confident you are. That gets locked, and only then does the challenge open. The order is the
-    point: an interpretation written after reading the model's is not independent of it.</p>
-    <div style="margin-top:14px"><button id="btn-cycle-inline">Put this through the cycle</button></div>
-  </div>`;
 }
 
 function renderCommitment(c) {
   return `<div class="commitcard">
     <div class="hd">
-      <span class="l">Your committed interpretation</span>
-      <span class="p">preserved</span>
+      <span class="l">My reading</span>
+      <span class="p">${c.locked_at.slice(0, 10)}</span>
     </div>
     <div style="font-size:15.5px;line-height:1.6">${withHighlights(c.interpretation)}</div>
     ${c.confidence != null ? `<div class="meter">
@@ -462,7 +378,7 @@ function renderCommitment(c) {
       ${c.proposed_next ? `<dt>Next experiment you proposed</dt><dd>${esc(c.proposed_next)}</dd>` : ""}
     </dl>
     <div class="tiny muted" style="margin-top:16px">
-      Locked ${c.locked_at.replace("T", " ").slice(0, 16)}. Your words, unedited.
+      Saved ${c.locked_at.replace("T", " ").slice(0, 16)}, kept as written.
     </div>
   </div>`;
 }
@@ -478,6 +394,58 @@ function renderDatasets() {
         ? `, ${d.n_rows} rows x ${d.n_cols} cols` : ""}</div>
     </div>`).join("")}
   </div>`;
+}
+
+// Figures pulled from GitHub through the helper on this Mac.
+function renderFigures() {
+  const figs = EXP.figures || [];
+  return `<div class="card">
+    <div class="row" style="justify-content:space-between"><h3 style="margin:0">Figures</h3>
+      <button class="ghost sm" id="fig-add">+ From GitHub</button></div>
+    ${figs.length ? `<div class="figs">${figs.map(f => `<figure class="fig">
+      <img src="${esc(B.figureUrl(f))}" alt="${esc(f.caption)}" loading="lazy">
+      <figcaption><input data-figcap="${f.id}" value="${esc(f.caption)}" aria-label="Caption">
+        <div class="tiny muted">${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.repo.split("/")[1])}/${esc(f.path)}</a>` : esc(f.path)}
+        <button class="link" data-figrm="${f.id}">remove</button></div></figcaption></figure>`).join("")}</div>`
+      : `<p class="tiny muted" style="margin-top:6px">Plots and images from your repos, kept with this entry and ready for slides.</p>`}
+  </div>`;
+}
+
+async function pickFigure() {
+  modal.classList.add("wide");
+  $("#modal-body").innerHTML = `<h2>Figures from GitHub</h2><p class="small muted">${SPIN} loading your repositories</p>`;
+  modal.showModal();
+  let repos;
+  try { repos = await api("/github/repos"); }
+  catch (e) { $("#modal-body").innerHTML = `<h2>Figures from GitHub</h2><div class="err">${esc(e.message)}</div>`; return; }
+  $("#modal-body").innerHTML = `<h2>Figures from GitHub</h2>
+    <div class="row" style="flex-wrap:wrap">
+      <select id="gh-repo" style="flex:1;min-width:180px">${repos.map(r => `<option value="${esc(r.full_name)}">${esc(r.name)}${r.private ? " (private)" : ""}</option>`).join("")}</select>
+      <input id="gh-filter" placeholder="filter, e.g. figures/ or umap" style="flex:1;min-width:180px">
+    </div>
+    <div class="err" id="gh-err"></div>
+    <div id="gh-list" style="margin-top:12px"></div>`;
+  let figs = [];
+  const draw = () => {
+    const q = $("#gh-filter").value.toLowerCase();
+    const shown = figs.filter(f => f.path.toLowerCase().includes(q)).slice(0, 200);
+    $("#gh-list").innerHTML = shown.length ? `<div class="gh-files">${shown.map(f => `<button class="gh-file" data-path="${esc(f.path)}">
+      <span>${esc(f.path)}</span><span class="tiny muted">${Math.max(1, Math.round(f.size / 1024))} kB</span></button>`).join("")}</div>`
+      : `<p class="small muted">No images${q ? " match" : " in this repository"}.</p>`;
+    $("#gh-list").querySelectorAll("[data-path]").forEach(b => b.onclick = async () => {
+      b.disabled = true; b.querySelector("span").textContent = "attaching…";
+      try { EXP = await api(`/experiments/${EXP.id}/figures`, "POST", { repo: $("#gh-repo").value, path: b.dataset.path }); modal.close(); render(); }
+      catch (e) { b.disabled = false; b.querySelector("span").textContent = b.dataset.path; $("#gh-err").textContent = e.message; }
+    });
+  };
+  const load = async () => {
+    $("#gh-list").innerHTML = `<span class="small muted">${SPIN} reading the repository</span>`;
+    try { figs = (await api(`/github/figures?repo=${encodeURIComponent($("#gh-repo").value)}`)).figures || []; draw(); }
+    catch (e) { $("#gh-list").innerHTML = ""; $("#gh-err").textContent = e.message; }
+  };
+  $("#gh-repo").onchange = load;
+  $("#gh-filter").oninput = draw;
+  load();
 }
 
 function renderReagentsUsed() {
@@ -651,7 +619,7 @@ function renderConnectorOutput() {
 function renderCommitForm() {
   return `<div class="card">
     <div class="row" style="justify-content:space-between;align-items:flex-start">
-      <h3 style="margin:0">Your view, before anything answers</h3>
+      <h3 style="margin:0">${EXP.commitments.length ? "A new reading" : "My reading"}</h3>
       <div class="row" style="gap:14px">
         <label class="tiny" style="margin:0;font-weight:400;white-space:nowrap">
           <input type="checkbox" id="opt-guided" ${PREFS.guided ? "checked" : ""}
@@ -662,8 +630,7 @@ function renderCommitForm() {
       </div>
     </div>
     <p class="small muted" style="margin-top:6px">
-      Write it however you write. Once you lock it, it cannot be edited, and only then does the
-      challenge open.</p>
+      Write it however you write. Each reading is kept as written, so a new one sits beside the old.</p>
 
     ${PREFS.guided ? `
       <label>What did you expect?
@@ -691,57 +658,60 @@ function renderCommitForm() {
       <label>How confident are you? <span id="conflabel" class="conf">60</span>/100</label>
       <input type="range" id="f-confidence" min="0" max="100" value="60" style="padding:0">` : ""}
 
-    <div class="row" style="margin-top:16px"><button id="btn-lock" class="hold">Hold to lock this and continue</button>
-      <span class="tiny muted">Hold for a second. There is no edit after this.</span></div>
+    <div style="margin-top:16px"><button id="btn-lock">Save this reading</button></div>
     <div class="err" id="lock-err"></div>
   </div>`;
 }
 
-// Challenges asked for on the record as it stands, without a locked view to compare.
-function renderEarly() {
-  const early = EXP.early_challenges || [];
-  if (!AI && !early.length) return "";
-  return `${early.map(ch => `<div class="sect-label">Challenge on the record so far &middot; ${ch.created_at.slice(0, 10)}</div>
-    ${ch.blind.explanations.map((e, i) => `<div class="hypo">
-      <div class="n">Alternative hypothesis ${pad2(i + 1)} &middot; ${esc(e.kind)}</div>
+// The optional reading: the latest in full, earlier ones folded, and a form for a new one.
+function renderReading(c) {
+  const earlier = EXP.commitments.slice(0, -1).reverse();
+  return `${c ? renderCommitment(c) : ""}
+    ${earlier.length ? `<details class="card"><summary class="small">Earlier readings (${earlier.length})</summary>
+      ${earlier.map(renderCommitment).join("")}</details>` : ""}
+    <details class="card reading-form" ${c ? "" : "open"}>
+      <summary class="small">${c ? "Write a new reading" : "Write down your reading"}</summary>
+      ${renderCommitForm().replace(/^<div class="card">/, "<div>")}
+    </details>`;
+}
+
+// Second opinions on this entry, newest last, with the button to ask for another.
+function renderSecondOpinion() {
+  const early = (EXP.early_challenges || []).map(ch => ({ ch, c: null, resp: null }));
+  const linked = EXP.commitments.flatMap(c => c.challenges.map(ch => ({ ch, c, resp: ch.responses[ch.responses.length - 1] || null })));
+  const all = [...early, ...linked].sort((a, b) => (a.ch.created_at < b.ch.created_at ? -1 : 1));
+  if (!AI && !all.length) return "";
+  return `${all.map(({ ch, c, resp }) => c ? renderChallenge(ch, c, resp) : renderOpinionOnly(ch)).join("")}
+    ${AI ? `<div class="card"><div class="row" style="flex-wrap:wrap">
+      <button class="ai" id="btn-second">Get a second opinion</button>
+      <span class="tiny muted" style="flex:1;min-width:200px">Reads this entry as it stands${EXP.commitments.length ? ", then compares with your latest reading" : ""}.</span></div>
+      <div class="err" id="second-err"></div></div>` : ""}`;
+}
+
+function renderOpinionOnly(ch) {
+  const b = ch.blind;
+  return `<div class="sect-label">Second opinion &middot; ${ch.created_at.slice(0, 10)}</div>
+    ${b.explanations.map((e, i) => `<div class="hypo">
+      <div class="n">Possibility ${pad2(i + 1)} &middot; ${esc(e.kind)}</div>
       <div class="body"><strong>${esc(e.label)}.</strong> ${esc(e.statement)}</div>
       ${ul(e.supports, "pro")}${ul(e.contradicts, "con")}
       <div class="kill">Ruled out by: ${esc(e.would_rule_out)}</div></div>`).join("")}
     <div class="hypo"><div class="n">What would distinguish these?</div>
-      <div class="body">${esc(ch.blind.discriminating_experiment.description)}</div>
-      <div class="small muted" style="margin-top:7px">${esc(ch.blind.discriminating_experiment.reads_out)}</div>
-      ${(ch.blind.missing_controls || []).length ? `<div class="sub">Controls missing from the record</div>${ul(ch.blind.missing_controls, "con")}` : ""}
-      ${(ch.blind.record_is_silent_on || []).length ? `<div class="sub">Your record didn't say</div>${ul(ch.blind.record_is_silent_on, "con")}` : ""}
-    </div>`).join("")}
-    ${AI ? `<div class="card"><div class="row" style="flex-wrap:wrap">
-      <button class="ai" id="btn-early">${early.length ? "Challenge it again" : "Challenge what I have so far"}</button>
-      <span class="tiny muted" style="flex:1;min-width:200px">Reads your notes and context as they stand. Locking your own view first is optional.</span></div>
-      <div class="err" id="early-err"></div></div>` : ""}`;
-}
-
-function renderChallengeGate() {
-  if (!AI) return `<div class="card"><div class="gate">Your view is on the record.<br>
-    <span class="small">Turn on agentic help in the header if you want it challenged.</span></div></div>`;
-  return `<div class="card">
-    <div class="gate">
-      Your view is on the record.<br>
-      <button class="ai" id="btn-challenge" style="margin-top:13px">Now let it be challenged</button>
-      <div class="small" style="margin-top:11px;max-width:52ch;margin-inline:auto">
-        The model will generate its own explanations <em>without seeing your interpretation</em>,
-        then compare. That is why the overlap means something.
-      </div>
-    </div>
-    <div class="err" id="ch-err"></div>
-  </div>`;
+      <div class="body">${esc(b.discriminating_experiment.description)}</div>
+      <div class="small muted" style="margin-top:7px">${esc(b.discriminating_experiment.reads_out)}</div>
+      ${(b.missing_controls || []).length ? `<div class="sub">Controls missing from the record</div>${ul(b.missing_controls, "con")}` : ""}
+      ${(b.record_is_silent_on || []).length ? `<div class="sub">Your record didn't say</div>${ul(b.record_is_silent_on, "con")}` : ""}
+    </div>`;
 }
 
 function renderChallenge(ch, c, resp) {
+  const latest = EXP.commitments.length && c === EXP.commitments[EXP.commitments.length - 1] && ch === c.challenges[c.challenges.length - 1];
   const b = ch.blind, d = ch.divergence;
   return `
-  <div class="sect-label">Challenges</div>
+  <div class="sect-label">Second opinion &middot; ${ch.created_at.slice(0, 10)}</div>
   ${b.explanations.map((e, i) => `
     <div class="hypo">
-      <div class="n">Alternative hypothesis ${pad2(i + 1)} &middot; ${esc(e.kind)}</div>
+      <div class="n">Possibility ${pad2(i + 1)} &middot; ${esc(e.kind)}</div>
       <div class="body"><strong>${esc(e.label)}.</strong> ${esc(e.statement)}</div>
       ${ul(e.supports, "pro")}${ul(e.contradicts, "con")}
       <div class="kill">Ruled out by: ${esc(e.would_rule_out)}</div>
@@ -787,10 +757,9 @@ function renderChallenge(ch, c, resp) {
         <div>${esc(resp.chosen_next)}</div>` : ""}
     </div>
     <div class="card"><button class="ghost sm" id="btn-branch">Create the next experiment from this decision</button></div>`
-  : `<div class="card">
-      <h3>Your decision</h3>
-      <p class="small muted" style="margin-top:-4px">Holding your position is a legitimate answer,
-      and so is changing it. What is recorded is which one you did, and why.</p>
+  : !latest ? "" : `<div class="card">
+      <h3>Your take</h3>
+      <p class="small muted" style="margin-top:-4px">Optional. Keeping your reading is as good an answer as changing it.</p>
       <label>Where do you land?</label>
       <select id="r-stance">
         <option value="held">I hold my interpretation</option>
@@ -1058,11 +1027,7 @@ function renderRefRail() {
       <div class="d">Definitions only. What a term denotes, never what your result means.
       That part stays yours.</div>
     </div>
-    <div class="ref-state ${AI ? "" : "wait"}">
-      ${AI
-        ? "Agentic help is on. Definitions, scans and challenges are there whenever you want them."
-        : "Agentic help is off. Your own glossary works as normal; turn agentic help on in the header for definitions and scans."}
-    </div>
+
     <div class="ref-body">
       <div class="ref-count">${shown.length} term${shown.length === 1 ? "" : "s"} recognised</div>
       <div class="chips">
@@ -1685,12 +1650,6 @@ function wire(c, ch) {
     render(); refreshRailData();
   });
 
-  const cyc = $("#btn-cycle-inline");
-  if (cyc) cyc.onclick = async () => {
-    EXP = await api(`/experiments/${EXP.id}/mode`, "PUT", { mode: "cycle" });
-    render(); renderStages(); reloadLog();
-  };
-
   const pick = $("#note-reagent");
   if (pick) pick.onchange = () => {
     const r = REAGENTS.find(x => x.id === +pick.value);
@@ -1715,7 +1674,7 @@ function wire(c, ch) {
   };
 
   const lock = $("#btn-lock");
-  if (lock) holdToLock(lock, async () => {
+  if (lock) lock.onclick = (async () => {
     try {
       lock.disabled = true;
       const val = (id) => { const el = $(id); return el ? el.value.trim() : ""; };
@@ -1733,16 +1692,27 @@ function wire(c, ch) {
     } catch (e) { lock.disabled = false; $("#lock-err").textContent = e.message; }
   });
 
-  const btnCh = $("#btn-challenge");
-  if (btnCh) btnCh.onclick = async () => {
-    btnCh.disabled = true;
-    btnCh.innerHTML = `${SPIN} thinking against you`;
+  const figAdd = $("#fig-add");
+  if (figAdd) figAdd.onclick = pickFigure;
+  $("#main").querySelectorAll("[data-figcap]").forEach(el => el.onchange = async () => { EXP = await api(`/figures/${el.dataset.figcap}`, "PUT", { caption: el.value }); });
+  $("#main").querySelectorAll("[data-figrm]").forEach(el => el.onclick = async () => {
+    if (!el.dataset.sure) { el.dataset.sure = "1"; el.textContent = "click again to remove"; return; }
+    EXP = await api(`/figures/${el.dataset.figrm}`, "DELETE"); render();
+  });
+
+  const second = $("#btn-second");
+  if (second) second.onclick = async () => {
+    second.disabled = true;
+    second.innerHTML = `${SPIN} reading this entry`;
+    const latest = EXP.commitments[EXP.commitments.length - 1];
     try {
-      EXP = await api(`/commitments/${c.id}/challenge`, "POST");
-      render(); renderStages(); reloadLog();
+      EXP = latest && !latest.challenges.length
+        ? await api(`/commitments/${latest.id}/challenge`, "POST")
+        : await api(`/experiments/${EXP.id}/challenge`, "POST");
+      render(); paintChain();
     } catch (e) {
-      btnCh.disabled = false; btnCh.textContent = "Now let it be challenged";
-      $("#ch-err").textContent = e.message;
+      second.disabled = false; second.textContent = "Get a second opinion";
+      $("#second-err").textContent = e.message;
     }
   };
 
@@ -1770,19 +1740,6 @@ function wire(c, ch) {
       });
       render(); reloadLog();
     } catch (e) { verdict.disabled = false; $("#v-err").textContent = e.message; }
-  };
-
-  const early = $("#btn-early");
-  if (early) early.onclick = async () => {
-    early.disabled = true;
-    early.innerHTML = `${SPIN} reading your record`;
-    try {
-      EXP = await api(`/experiments/${EXP.id}/challenge`, "POST");
-      render(); paintChain();
-    } catch (e) {
-      early.disabled = false; early.textContent = "Challenge what I have so far";
-      $("#early-err").textContent = e.message;
-    }
   };
 
   const branch = $("#btn-branch");
@@ -1820,10 +1777,6 @@ function renderNewExperiment(parentId) {
     <label>What question is this asking?
       <span class="hint">The question, not the technique.</span></label>
     <textarea id="n-question" rows="2"></textarea>
-    <label style="margin-top:16px">
-      <input type="checkbox" id="n-cycle" style="width:auto"> Put this through the cycle
-      <span class="hint">Leave off for a plain notebook entry. You can turn it on later.</span>
-    </label>
     ${FOLDERS.length ? `<label>Folder</label>
       <select id="n-folder"><option value="">Unfiled</option>
         ${FOLDERS.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join("")}
@@ -1891,7 +1844,7 @@ function renderNewExperiment(parentId) {
       context: Object.fromEntries(CTX.filter(([k, v]) => k.trim() && v.trim())),
       parent_experiment_id: parentId || null,
       folder_id: fsel && fsel.value ? +fsel.value : null,
-      mode: $("#n-cycle").checked ? "cycle" : "notebook",
+      mode: "notebook",
       template: CTX_TPL,
     });
     EXP = created;
