@@ -7,6 +7,7 @@ import * as calc from "./calc.js";
 import { TEMPLATES, byId as templateById } from "./templates.js";
 import * as datafiles from "./datafiles.js";
 import { suggestQuery } from "./literature.js";
+import { findUses } from "./usage.js";
 
 let store = null;
 let recs = [];
@@ -334,13 +335,28 @@ route("DELETE", "/experiments/{id}", async ({ id }) => {
 
 route("DELETE", "/notes/{id}", async ({ id }) => {
   const n = need("note", id, "note");
+  for (const u of all("reagent_use").filter((x) => x.from_note === n.id)) {
+    const r = get("reagent", u.reagent_id);
+    if (u.amount && r && r.amount_left != null) await upd(r, { amount_left: r.amount_left + u.amount });
+    await del(u);
+  }
   for (const s of all("step_note").filter((x) => x.note_id === n.id)) await del(s);
   await del(n);
   return exp(n.experiment_id);
 });
 route("POST", "/experiments/{id}/notes", async ({ id }, b) => {
-  need("experiment", id, "experiment");
-  await ins("note", { experiment_id: Number(id), body: b.body, source: b.source || "typed", recording_id: b.recording_id || null });
+  const e = need("experiment", id, "experiment");
+  const note = await ins("note", { experiment_id: e.id, body: b.body, source: b.source || "typed", recording_id: b.recording_id || null });
+  // Amounts written in the note come off the shelf, so nothing is logged twice.
+  const used = [];
+  for (const u of findUses(b.body || "", listReagents(e.project_id))) {
+    const r = get("reagent", u.reagent_id);
+    const take = u.amount_in_stock_unit;
+    const use = await ins("reagent_use", { reagent_id: r.id, experiment_id: e.id, amount: take, note: u.matched, from_note: note.id });
+    if (take && r.amount_left != null) await upd(r, { amount_left: Math.max(0, r.amount_left - take) });
+    used.push({ use_id: use.id, reagent_id: r.id, name: r.name, amount: u.amount, unit: u.unit, counted: take != null });
+  }
+  if (used.length) await upd(get("note", note.id), { used });
   return exp(id);
 });
 route("POST", "/experiments/{id}/ink", async ({ id }, b) => {

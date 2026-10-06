@@ -123,3 +123,19 @@ test("a reagent or dataset with its own kind field stays what it is", async () =
   assert.equal(r.kind, "buffer");
   assert.ok((await B.api(`/projects/${p.id}/reagents`)).some((x) => x.name === "PBS 10x"));
 });
+
+test("amounts written in a note come off the shelf, and come back if the note goes", async () => {
+  const p = await B.api("/projects", "POST", { name: "usage", description: "" });
+  const dmem = await B.api(`/projects/${p.id}/reagents`, "POST", { name: "DMEM/F-12", unit: "mL", amount_total: 500, low_at: 100 });
+  await B.api(`/projects/${p.id}/reagents`, "POST", { name: "FBS", unit: "mL", amount_total: 50 });
+  const e = await B.api(`/projects/${p.id}/experiments`, "POST", { title: "Feed", mode: "notebook" });
+  let x = await B.api(`/experiments/${e.id}/notes`, "POST", { body: "Fed both plates, used 10 mL of DMEM/F-12 and 500 uL FBS." });
+  assert.equal((await B.api(`/reagents/${dmem.id}`)).amount_left, 490);
+  const fbs = (await B.api(`/projects/${p.id}/reagents`)).find((r) => r.name === "FBS");
+  assert.equal(fbs.amount_left, 49.5);
+  assert.equal(x.notes[0].used.length, 2);
+  assert.equal(x.reagents.length, 2);
+  x = await B.api(`/notes/${x.notes[0].id}`, "DELETE");
+  assert.equal((await B.api(`/reagents/${dmem.id}`)).amount_left, 500);
+  assert.equal(x.reagents.length, 0);
+});

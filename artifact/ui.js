@@ -164,6 +164,7 @@ async function boot() {
       for (const it of await api("/zotero/items")) ZALL[it.key] = it;
     } catch (e) { ZSTATUS = { ready: false, detail: e.message }; }
   }
+  await loadReagents();
   await refreshList();
 }
 
@@ -329,6 +330,17 @@ async function openExperiment(id) {
   refreshRailData();
 }
 
+// The shelf, kept to hand for the note picker and the low-stock count.
+async function loadReagents() {
+  REAGENTS = await api(`/projects/${PROJECT.id}/reagents`);
+  const low = REAGENTS.filter(r => r.status !== "ok").length;
+  const b = $("#btn-bench");
+  let badge = b.querySelector(".lowbadge");
+  if (!low) { if (badge) badge.remove(); return; }
+  if (!badge) { badge = document.createElement("span"); badge.className = "lowbadge"; b.appendChild(badge); }
+  badge.textContent = `${low} low`;
+}
+
 async function refreshRailData() {
   [GLOSS, CONNS] = await Promise.all([
     api(`/projects/${PROJECT.id}/glossary`),
@@ -379,6 +391,7 @@ function render() {
             <div class="notes-row small">
               <div>${withHighlights(n.body)}
                 <span class="muted tiny">${n.source === "voice" ? "dictated, " : ""}${n.created_at.slice(0, 10)}</span>
+                ${(n.used || []).length ? `<div class="usechips">${n.used.map(u => `<span class="usechip" title="${u.counted ? "taken off the shelf" : "logged; the units do not match the bottle, so stock was not changed"}">&minus;${u.amount} ${esc(u.unit)} ${esc(u.name)}</span>`).join("")}</div>` : ""}
               </div>
               <button class="trash" data-delnote="${n.id}" title="Delete this note">${TRASH}</button>
             </div>`).join("")
@@ -386,6 +399,10 @@ function render() {
            the spreadsheet. Consistency of a gel, a line that looked unhappy, beads sitting low.</div>`}
       <div class="row" style="margin-top:10px">
         <input id="note" placeholder="Add an observation" list="note-terms">
+        ${REAGENTS.length ? `<select id="note-reagent" class="reagent-pick" aria-label="Add a reagent you used">
+          <option value="">+ reagent</option>
+          ${REAGENTS.map(r => `<option value="${r.id}">${esc(r.name)}${r.amount_left != null ? ` (${r.amount_left}${esc(r.unit || "")} left)` : ""}</option>`).join("")}
+        </select>` : ""}
         <datalist id="note-terms">
           ${SUGG.terms.map(t => `<option value="${esc(t)}"></option>`).join("")}
         </datalist>
@@ -1634,11 +1651,26 @@ function wire(c, ch) {
     render(); renderStages(); reloadLog();
   };
 
+  const pick = $("#note-reagent");
+  if (pick) pick.onchange = () => {
+    const r = REAGENTS.find(x => x.id === +pick.value);
+    pick.value = "";
+    if (!r) return;
+    const box = $("#note");
+    const lead = box.value && !/\s$/.test(box.value) ? " " : "";
+    const unit = r.unit || "mL";
+    box.value += `${lead}used  ${unit} of ${r.name}`;
+    const at = box.value.length - (` ${unit} of ${r.name}`).length;
+    box.focus();
+    box.setSelectionRange(at, at);
+  };
+
   const note = $("#btn-note");
   if (note) note.onclick = async () => {
     const body = $("#note").value.trim();
     if (!body) return;
     EXP = await api(`/experiments/${EXP.id}/notes`, "POST", { body });
+    await loadReagents();
     render(); refreshRailData();
   };
 
@@ -2131,6 +2163,7 @@ function reagentForm(r) {
 }
 
 $("#btn-bench").onclick = openBench;
+modal.addEventListener("close", () => { if (PROJECT) loadReagents(); });
 
 let TEMPLATES = [], CALC = { kind: "dilution", result: null };
 
