@@ -31,6 +31,7 @@ function withHighlights(text) {
 }
 
 let PROJECT = null, EXP = null, CTX = [], TAB = "ref";
+let AI = false;
 let GLOSS = [], MATCHES = [], CONNS = [], FOLDERS = [], LOG = [];
 let TSTATUS = { ready: false, missing: [] };
 let ZSTATUS = { ready: false }, ZCOLLS = [], ZITEMS = [], ZALL = {};
@@ -153,6 +154,8 @@ async function boot() {
     projects = [await api("/projects", "POST", { name: "Untitled project", description: "" })];
   }
   PROJECT = projects[0];
+  AI = !!(await api("/settings")).ai;
+  paintAi();
   TEMPLATES = await api("/templates");
   TSTATUS = await api("/transcription/status");
   ZSTATUS = await api("/zotero/status");
@@ -347,10 +350,7 @@ function render() {
   const ctx = Object.entries(EXP.context || {});
 
   const cycle = inCycle(EXP);
-  const banner = !cycle ? ""
-    : c
-    ? `<div class="banner">${LOCK_OPEN}Your view is committed. Challenge unlocked.</div>`
-    : `<div class="banner wait">${LOCK_SHUT}Write your own reading first. The challenge stays locked until you do.</div>`;
+  const banner = cycle && c ? `<div class="banner">${LOCK_SHUT}Your view is on the record.</div>` : "";
 
   $("#main").innerHTML = `
     ${banner}
@@ -397,6 +397,7 @@ function render() {
     ${renderInk()}
     ${renderLinkedPapers()}
     ${renderConnectorOutput()}
+    ${renderEarly()}
     ${cycle
       ? `${c ? renderCommitment(c) : renderCommitForm()}
          ${c ? (ch ? renderChallenge(ch, c, resp) : renderChallengeGate()) : ""}
@@ -673,7 +674,31 @@ function renderCommitForm() {
   </div>`;
 }
 
+// Challenges asked for on the record as it stands, without a locked view to compare.
+function renderEarly() {
+  const early = EXP.early_challenges || [];
+  if (!AI && !early.length) return "";
+  return `${early.map(ch => `<div class="sect-label">Challenge on the record so far &middot; ${ch.created_at.slice(0, 10)}</div>
+    ${ch.blind.explanations.map((e, i) => `<div class="hypo">
+      <div class="n">Alternative hypothesis ${pad2(i + 1)} &middot; ${esc(e.kind)}</div>
+      <div class="body"><strong>${esc(e.label)}.</strong> ${esc(e.statement)}</div>
+      ${ul(e.supports, "pro")}${ul(e.contradicts, "con")}
+      <div class="kill">Ruled out by: ${esc(e.would_rule_out)}</div></div>`).join("")}
+    <div class="hypo"><div class="n">What would distinguish these?</div>
+      <div class="body">${esc(ch.blind.discriminating_experiment.description)}</div>
+      <div class="small muted" style="margin-top:7px">${esc(ch.blind.discriminating_experiment.reads_out)}</div>
+      ${(ch.blind.missing_controls || []).length ? `<div class="sub">Controls missing from the record</div>${ul(ch.blind.missing_controls, "con")}` : ""}
+      ${(ch.blind.record_is_silent_on || []).length ? `<div class="sub">Your record didn't say</div>${ul(ch.blind.record_is_silent_on, "con")}` : ""}
+    </div>`).join("")}
+    ${AI ? `<div class="card"><div class="row" style="flex-wrap:wrap">
+      <button class="ai" id="btn-early">${early.length ? "Challenge it again" : "Challenge what I have so far"}</button>
+      <span class="tiny muted" style="flex:1;min-width:200px">Reads your notes and context as they stand. Locking your own view first is optional.</span></div>
+      <div class="err" id="early-err"></div></div>` : ""}`;
+}
+
 function renderChallengeGate() {
+  if (!AI) return `<div class="card"><div class="gate">Your view is on the record.<br>
+    <span class="small">Turn on AI help in the header if you want it challenged.</span></div></div>`;
   return `<div class="card">
     <div class="gate">
       Your view is on the record.<br>
@@ -976,10 +1001,10 @@ function renderRefRail() {
       <div class="d">Definitions only. What a term denotes, never what your result means.
       That part stays yours.</div>
     </div>
-    <div class="ref-state ${committed ? "" : "wait"}">
-      ${committed
-        ? "Your view is committed. Sources and AI analysis are now visible."
-        : "Definitions are always available. AI interpretation stays locked until you commit."}
+    <div class="ref-state ${AI ? "" : "wait"}">
+      ${AI
+        ? "AI help is on. Definitions, scans and challenges are there whenever you want them."
+        : "AI help is off. Your own glossary works as normal; turn AI help on in the header for definitions and scans."}
     </div>
     <div class="ref-body">
       <div class="ref-count">${shown.length} term${shown.length === 1 ? "" : "s"} recognised</div>
@@ -998,7 +1023,7 @@ function renderRefRail() {
       <div class="tiny muted" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--rule)">
         Select any word in the middle pane to define it in the context of this experiment.
       </div>
-      <button class="ghost sm" id="g-detect" style="margin-top:10px;width:100%">Scan this record for terms</button>
+      ${AI ? `<button class="ghost sm" id="g-detect" style="margin-top:10px;width:100%">Scan this record for terms</button>` : ""}
       <div class="err tiny" id="g-err"></div>
       <div style="margin-top:16px">
         <h3>Add your own</h3>
@@ -1020,7 +1045,7 @@ function renderRefRail() {
     EXP = await api(`/highlights/${el.dataset.unmark}`, "DELETE");
     render(); renderRail();
   });
-  $("#g-detect").onclick = async (e) => {
+  if ($("#g-detect")) $("#g-detect").onclick = async (e) => {
     const b = e.target;
     b.disabled = true; b.innerHTML = `${SPIN} reading`;
     try {
@@ -1071,6 +1096,7 @@ document.addEventListener("mouseup", (e) => {
   SELTERM = text;
   const r = sel.getRangeAt(0).getBoundingClientRect();
   const pop = $("#selpop");
+  pop.querySelector('[data-act="define"]').hidden = !AI;
   pop.style.display = "block";
   pop.style.left = `${window.scrollX + r.left + r.width / 2 - pop.offsetWidth / 2}px`;
   pop.style.top = `${window.scrollY + r.top - pop.offsetHeight - 8}px`;
@@ -1342,8 +1368,8 @@ function renderPapersRail() {
     <div style="margin-top:22px;padding-top:16px;border-top:1px solid var(--rule)">
       <h3>From the field</h3>
       <p class="tiny muted" style="margin-top:-5px">How other people have handled this. Europe PMC,
-      peer reviewed by default. Your own query, so nothing about your experiment is sent unless
-      you put it there.</p>
+      peer reviewed by default, searched from your Mac alongside your own Zotero library. Your own
+      query, so nothing about your experiment is sent unless you put it there.</p>
       <textarea id="lit-q" rows="2" placeholder="search terms">${esc(LIT.query)}</textarea>
       <label style="margin:7px 0 3px;font-weight:400;font-size:12px">
         <input type="checkbox" id="lit-pp" ${LIT.preprints ? "checked" : ""} style="width:auto">
@@ -1360,6 +1386,12 @@ function renderPapersRail() {
         Nothing matched all your terms, so it dropped
         ${LIT.dropped.map(d => `<strong>${esc(d)}</strong>`).join(", ")} and searched
         <code>${esc(LIT.used)}</code>.</div>` : ""}
+      ${(LIT.library || []).length ? `<h3 style="margin-top:14px">Already in your library</h3>
+        ${LIT.library.map(it => `<div class="paper">
+          <div class="pt" data-open="${esc(it.key)}">${esc(it.title)}</div>
+          <div class="pm">${esc((it.authors || []).join(", "))}${it.date ? `, ${esc(it.date)}` : ""}</div>
+        </div>`).join("")}
+        <h3 style="margin-top:14px">From the field</h3>` : ""}
       <div style="margin-top:10px">
         ${LIT.results.length ? LIT.results.map(r => `
           <div class="paper">
@@ -1410,6 +1442,7 @@ function renderPapersRail() {
         query: LIT.query, include_preprints: LIT.preprints, reviews_only: LIT.reviews,
       });
       LIT.results = out.results;
+      LIT.library = out.library_matches || [];
       LIT.used = out.query_used;
       LIT.dropped = out.dropped;
       LIT.ran = true;
@@ -1460,6 +1493,7 @@ function drawPaper(p) {
         It will not tell you what this means for your experiment. That reading is yours.</div>
       </div>
       <button class="ghost sm" id="p-redigest">Regenerate</button>`
+    : !AI ? `<div class="small muted">Turn on AI help in the header to have this paper digested.</div>`
     : `<div class="gate">
         <button class="ai" id="p-digest">Digest this paper</button>
         <div class="tiny" style="margin-top:10px;max-width:46ch;margin-inline:auto">
@@ -1664,6 +1698,19 @@ function wire(c, ch) {
       });
       render(); reloadLog();
     } catch (e) { verdict.disabled = false; $("#v-err").textContent = e.message; }
+  };
+
+  const early = $("#btn-early");
+  if (early) early.onclick = async () => {
+    early.disabled = true;
+    early.innerHTML = `${SPIN} reading your record`;
+    try {
+      EXP = await api(`/experiments/${EXP.id}/challenge`, "POST");
+      render(); paintChain();
+    } catch (e) {
+      early.disabled = false; early.textContent = "Challenge what I have so far";
+      $("#early-err").textContent = e.message;
+    }
   };
 
   const branch = $("#btn-branch");
@@ -2190,6 +2237,21 @@ document.querySelectorAll("#panebar .tab").forEach(t =>
   t.onclick = () => showPane(t.dataset.pane));
 NARROW.addEventListener("change", () => showPane(NARROW.matches ? "center" : "left"));
 if (NARROW.matches) showPane("center");
+
+// AI help is opt-in; when it is on, nothing waits for a locked view.
+function paintAi() {
+  const b = $("#btn-ai");
+  b.classList.toggle("ai-on", AI);
+  b.setAttribute("aria-pressed", String(AI));
+  b.textContent = AI ? "AI help: on" : "AI help: off";
+  $("#btn-brief").hidden = !AI;
+}
+$("#btn-ai").onclick = async () => {
+  AI = !!(await api("/settings", "PUT", { ai: !AI })).ai;
+  paintAi();
+  if (EXP) render();
+  renderRail();
+};
 
 document.addEventListener("click", (e) => {
   const c = e.target.closest("[data-close]");

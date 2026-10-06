@@ -548,6 +548,7 @@
   }
   button.hold:hover { opacity: 1; }
   #askdlg { max-width: 460px; }
+  #btn-ai.ai-on { background: var(--ai-soft); color: var(--ai); border: 1.5px dashed var(--ai); }
   #panebar.off { display: none !important; }
   .wrap[hidden] { display: none; }
   button.ghost.on { background: var(--navy); color: var(--on-ink); border-color: var(--navy); }
@@ -648,6 +649,7 @@
   <div class="tools">
     <span class="chainmark" id="chain"></span>
     <span class="tiny muted" id="where"></span>
+    <button class="ghost sm" id="btn-ai" aria-pressed="false">AI help: off</button>
     <button class="ghost sm" id="btn-todo">To-do</button>
     <button class="ghost sm" id="btn-calc">Calc</button>
     <button class="ghost sm" id="btn-bench">Bench</button>

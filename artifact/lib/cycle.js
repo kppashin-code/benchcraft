@@ -37,6 +37,7 @@ export function bundle(recs, expId) {
     connector_calls: of("connector_call", "experiment_id", expId).sort(byTime("created_at"))
       .map((cc) => ({ ...strip(cc), connector_name: (connectors.get(cc.connector_id) || {}).name })).filter((cc) => cc.connector_name),
     commitments,
+    early_challenges: of("challenge", "experiment_id", expId).filter((ch) => !ch.commitment_id).sort(byTime("created_at")).map(strip),
   };
 }
 

@@ -413,6 +413,24 @@ route("PUT", "/recordings/{id}/transcript", async ({ id }, b) => {
   return exp(r.experiment_id);
 });
 
+route("GET", "/settings", () => ({ ai: false, ...(all("setting")[0] || {}) }));
+route("PUT", "/settings", async (_, b) => {
+  const old = all("setting")[0];
+  const f = { ai: !!b.ai, updated_at: now() };
+  if (old) await upd(old, f); else await ins("setting", f);
+  return all("setting")[0];
+});
+// A challenge on the record as it stands, asked for before or without a locked view.
+route("POST", "/experiments/{id}/challenge", async ({ id }) => {
+  const e = exp(id) || fail("No such experiment");
+  if (!e.notes.length && !e.question && !Object.keys(e.context).length) fail("Write a note or two first, so there is something to challenge.");
+  const last = e.commitments[e.commitments.length - 1];
+  const c = { aim: last ? last.aim : "", expected: last ? last.expected : "", observed: last ? last.observed : "(nothing summarised yet; the bench notes are the record)" };
+  const f = get("folder", e.folder_id);
+  const blind = await ask(P.blindInput(e, c, folderHistory(recs, e.id), f ? f.name : ""), { check: P.checkBlind });
+  await insChained("challenge", { experiment_id: e.id, commitment_id: null, model: "claude.ai, complex tier", blind, divergence: null, created_at: now() });
+  return exp(id);
+});
 route("POST", "/commitments/{id}/challenge", async ({ id }) => {
   const c = need("commitment", id, "commitment");
   const e = exp(c.experiment_id);
@@ -511,10 +529,10 @@ route("GET", "/experiments/{id}/literature/suggest", ({ id }) => {
   const e = exp(id) || fail("No such experiment");
   return { query: suggestQuery(e, glossaryMatches(e.project_id, e.id).map((g) => g.term)) };
 });
-route("POST", "/literature/search", () => fail("Searching Europe PMC from inside Claude needs a literature connector on your Claude account. Until then, use Suggest from record and paste the query into europepmc.org."));
+route("POST", "/literature/search", async (_, b) => zot("literature_search", { query: b.query || "", include_preprints: !!b.include_preprints, reviews_only: !!b.reviews_only }));
 
-// Zotero is read off disk by benchcraft/zotero_mcp.py, reached through the Claude desktop app.
-const ZOTERO = "host:benchcraft-zotero";
+// Zotero and literature search run in benchcraft/local_mcp.py, reached through the Claude desktop app.
+const ZOTERO = "host:benchcraft-local";
 async function zot(tool, args = {}) {
   const m = window.claude ? await window.claude.use("mcp") : null;
   if (!m) fail("Zotero is reached through the Claude desktop app. Open Benchcraft there.");
@@ -523,7 +541,7 @@ async function zot(tool, args = {}) {
     return r.payload ?? JSON.parse(r.content?.[0]?.text || "null");
   } catch (e) {
     if (e instanceof HttpError) throw e;
-    if (e.code === "server_not_connected") fail("The Zotero helper is not running. Open Benchcraft in the Claude desktop app, where the helper is set up.");
+    if (e.code === "server_not_connected") fail("The local helper is not running. Open Benchcraft in the Claude desktop app, where the helper is set up.");
     if (e.code === "not_granted" || e.code === "approval_required") fail("Benchcraft was not allowed to read Zotero in this view. Allow it from the artifact's permissions menu.");
     fail(`Zotero could not be read (${e.code || e.message}).`);
   }

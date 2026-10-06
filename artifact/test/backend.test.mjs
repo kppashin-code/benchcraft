@@ -105,3 +105,14 @@ test("to-do tasks move, trash and restore", async () => {
   const n = await B.api("/todo_notes", "PUT", { body: "email the core" });
   assert.equal(n.body, "email the core");
 });
+
+test("ai help is off until switched on, and an early challenge needs claude, not a locked view", async () => {
+  assert.equal((await B.api("/settings")).ai, false);
+  assert.equal((await B.api("/settings", "PUT", { ai: true })).ai, true);
+  const p = await B.api("/projects", "POST", { name: "early", description: "" });
+  const e = await B.api(`/projects/${p.id}/experiments`, "POST", { title: "Rosettes", mode: "notebook" });
+  await assert.rejects(B.api(`/experiments/${e.id}/challenge`, "POST"), /note or two/);
+  await B.api(`/experiments/${e.id}/notes`, "POST", { body: "rosettes looked smaller" });
+  await assert.rejects(B.api(`/experiments/${e.id}/challenge`, "POST"), /needs Claude/);
+  assert.deepEqual((await B.api(`/experiments/${e.id}`)).early_challenges, []);
+});

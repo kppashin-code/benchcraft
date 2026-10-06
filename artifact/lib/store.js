@@ -5,7 +5,7 @@ export const KINDS = [
   "project", "folder", "experiment", "note", "step_note", "recording", "uploaded_paper",
   "reagent", "reagent_component", "reagent_use", "dataset", "ink_note", "highlight",
   "commitment", "challenge", "response", "resolution", "glossary", "connector",
-  "connector_call", "paper_digest", "paper_note", "experiment_paper", "todo", "todo_notes",
+  "connector_call", "paper_digest", "paper_note", "experiment_paper", "todo", "todo_notes", "setting",
 ];
 
 const docId = (rec) => String(rec.id);
