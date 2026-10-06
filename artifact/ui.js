@@ -1839,7 +1839,7 @@ $("#btn-new").onclick = () => renderNewExperiment();
 $("#btn-pen").onclick = () => {
   if (!EXP) return;
   PEN.open = !PEN.open;
-  $("#btn-pen").classList.toggle("ai", PEN.open);
+  $("#btn-pen").classList.toggle("on", PEN.open);
   render();
   if (PEN.open) $("#pad").scrollIntoView({ behavior: "smooth", block: "center" });
 };
@@ -2278,10 +2278,14 @@ async function setTodo(on) {
   $("#panebar").classList.toggle("off", on);
   $("#stages").hidden = on;
   $("#btn-todo").classList.toggle("on", on);
-  $("#btn-todo").textContent = on ? "Notebook" : "To-do";
+  $("#pg-notebook").classList.toggle("on", !on);
+  $("#btn-todo").toggleAttribute("aria-current", on);
+  $("#pg-notebook").toggleAttribute("aria-current", !on);
+  $("#btn-pen").hidden = on;
   if (on) await showTodos($("#todoview"), PROJECT.id, async (id) => { await setTodo(false); await openExperiment(id); });
 }
-$("#btn-todo").onclick = () => setTodo(!TODO_ON);
+$("#btn-todo").onclick = () => setTodo(true);
+$("#pg-notebook").onclick = () => setTodo(false);
 
 B.init().then(async () => {
   paintChain();

@@ -116,3 +116,10 @@ test("ai help is off until switched on, and an early challenge needs claude, not
   await assert.rejects(B.api(`/experiments/${e.id}/challenge`, "POST"), /needs Claude/);
   assert.deepEqual((await B.api(`/experiments/${e.id}`)).early_challenges, []);
 });
+
+test("a reagent or dataset with its own kind field stays what it is", async () => {
+  const p = await B.api("/projects", "POST", { name: "kinds", description: "" });
+  const r = await B.api(`/projects/${p.id}/reagents`, "POST", { name: "PBS 10x", kind: "buffer" });
+  assert.equal(r.kind, "buffer");
+  assert.ok((await B.api(`/projects/${p.id}/reagents`)).some((x) => x.name === "PBS 10x"));
+});

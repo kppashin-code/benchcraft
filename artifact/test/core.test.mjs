@@ -9,8 +9,8 @@ const { blindInput, divergenceInput, checkBlind } = await import("../lib/prompts
 const { bundle, stage, calibration, folderHistory } = await import("../lib/cycle.js");
 
 const SECRET = "edge evaporation from a dry incubator shelf";
-const exp = { kind: "experiment", id: 1, project_id: 9, title: "Edge wells read low", question: "Why are edge wells low?", context: { plate: "96-well" }, folder_id: 5, mode: "cycle", created_at: "2026-10-01T10:00:00" };
-const commitment = { kind: "commitment", id: 2, experiment_id: 1, aim: "check uniformity", expected: "flat signal", observed: "outer ring 18% lower", interpretation: SECRET, confidence: 70, disconfirming: "humidified plate shows the same", proposed_next: "repeat with a humidity tray", locked_at: "2026-10-01T11:00:00" };
+const exp = { _t: "experiment", id: 1, project_id: 9, title: "Edge wells read low", question: "Why are edge wells low?", context: { plate: "96-well" }, folder_id: 5, mode: "cycle", created_at: "2026-10-01T10:00:00" };
+const commitment = { _t: "commitment", id: 2, experiment_id: 1, aim: "check uniformity", expected: "flat signal", observed: "outer ring 18% lower", interpretation: SECRET, confidence: 70, disconfirming: "humidified plate shows the same", proposed_next: "repeat with a humidity tray", locked_at: "2026-10-01T11:00:00" };
 
 test("blind input never contains the interpretation or its companions", () => {
   const text = blindInput({ ...exp, notes: [], recordings: [] }, commitment);
@@ -29,8 +29,8 @@ test("divergence input does contain the interpretation", () => {
 test("chain verifies, and catches an edit, a deletion and a reorder", async () => {
   const recs = [exp];
   const a = await seal(commitment, ledgerOf(recs)); recs.push(a);
-  const b = await seal({ kind: "challenge", id: 3, commitment_id: a.id, blind: { x: 1 }, created_at: "t" }, ledgerOf(recs)); recs.push(b);
-  const c = await seal({ kind: "response", id: 4, challenge_id: b.id, stance: "held", reasoning: "r", confidence_after: null, created_at: "t" }, ledgerOf(recs)); recs.push(c);
+  const b = await seal({ _t: "challenge", id: 3, commitment_id: a.id, blind: { x: 1 }, created_at: "t" }, ledgerOf(recs)); recs.push(b);
+  const c = await seal({ _t: "response", id: 4, challenge_id: b.id, stance: "held", reasoning: "r", confidence_after: null, created_at: "t" }, ledgerOf(recs)); recs.push(c);
   assert.equal(await verify(recs), null);
   assert.match((await verify(recs.map((r) => (r.id === a.id ? { ...r, interpretation: "else" } : r)))).why, /changed/);
   assert.ok(await verify(recs.filter((r) => r.id !== b.id)));
@@ -46,13 +46,13 @@ test("stage, nesting and calibration follow the stored records", async () => {
   const recs = [exp];
   const a = await seal(commitment, ledgerOf(recs)); recs.push(a);
   assert.equal(stage(bundle(recs, 1)), "commit");
-  const b = await seal({ kind: "challenge", id: 3, commitment_id: a.id, created_at: "t" }, ledgerOf(recs)); recs.push(b);
+  const b = await seal({ _t: "challenge", id: 3, commitment_id: a.id, created_at: "t" }, ledgerOf(recs)); recs.push(b);
   assert.equal(stage(bundle(recs, 1)), "challenge");
-  const r = await seal({ kind: "response", id: 4, challenge_id: b.id, stance: "held", created_at: "t" }, ledgerOf(recs)); recs.push(r);
+  const r = await seal({ _t: "response", id: 4, challenge_id: b.id, stance: "held", created_at: "t" }, ledgerOf(recs)); recs.push(r);
   assert.equal(stage(bundle(recs, 1)), "decide");
   assert.equal(bundle(recs, 1).commitments[0].challenges[0].responses[0].stance, "held");
-  recs.push(await seal({ kind: "resolution", id: 5, commitment_id: a.id, verdict: "unresolved", created_at: "2026-10-02" }, ledgerOf(recs)));
-  recs.push(await seal({ kind: "resolution", id: 6, commitment_id: a.id, verdict: "overturned", created_at: "2026-10-03" }, ledgerOf(recs)));
+  recs.push(await seal({ _t: "resolution", id: 5, commitment_id: a.id, verdict: "unresolved", created_at: "2026-10-02" }, ledgerOf(recs)));
+  recs.push(await seal({ _t: "resolution", id: 6, commitment_id: a.id, verdict: "overturned", created_at: "2026-10-03" }, ledgerOf(recs)));
   assert.equal(bundle(recs, 1).commitments[0].resolution.verdict, "overturned");
   const cal = calibration(recs, 9);
   assert.equal(cal.resolved_n, 1);

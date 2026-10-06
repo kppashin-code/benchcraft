@@ -22,16 +22,16 @@ class HttpError extends Error {}
 const fail = (msg) => { throw new HttpError(msg); };
 
 const all = (kind) => byKind(recs, kind);
-const get = (kind, id) => recs.find((r) => r.kind === kind && r.id === Number(id)) || null;
+const get = (kind, id) => recs.find((r) => r._t === kind && r.id === Number(id)) || null;
 const need = (kind, id, what) => get(kind, id) || fail(`No such ${what || kind}`);
 
 async function ins(kind, fields) {
-  const rec = { kind, id: nextId(), created_at: now(), ...fields };
+  const rec = { created_at: now(), ...fields, _t: kind, id: nextId() };
   await store.put(rec);
   return rec;
 }
 async function insChained(kind, fields) {
-  const rec = await seal({ kind, id: nextId(), ...fields }, ledgerOf(recs));
+  const rec = await seal({ ...fields, _t: kind, id: nextId() }, ledgerOf(recs));
   await store.put(rec);
   return rec;
 }

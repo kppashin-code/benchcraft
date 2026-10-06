@@ -29,7 +29,7 @@ export async function seal(rec, ledger) {
 }
 
 export function ledgerOf(records) {
-  return records.filter((r) => CHAINED.includes(r.kind)).sort((a, b) => a.seq - b.seq);
+  return records.filter((r) => CHAINED.includes(r._t)).sort((a, b) => a.seq - b.seq);
 }
 
 // Returns the first broken record, or null when the whole chain checks out.

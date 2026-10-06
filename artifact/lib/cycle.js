@@ -1,12 +1,12 @@
 // Derived views over stored records, in the shapes app.py and db.py returned.
 const SCORE = { held: 1.0, partly: 0.5, overturned: 0.0 };
 
-export const byKind = (recs, kind) => recs.filter((r) => r.kind === kind);
+export const byKind = (recs, kind) => recs.filter((r) => r._t === kind);
 const byTime = (f) => (a, b) => (a[f] < b[f] ? -1 : a[f] > b[f] ? 1 : a.id - b.id);
-const strip = ({ kind, seq, prev, hash, ...rest }) => ({ ...rest, ...(hash ? { seq, hash } : {}) });
+const strip = ({ _t, seq, prev, hash, ...rest }) => ({ ...rest, ...(hash ? { seq, hash } : {}) });
 
 export function bundle(recs, expId) {
-  const exp = recs.find((r) => r.kind === "experiment" && r.id === expId);
+  const exp = recs.find((r) => r._t === "experiment" && r.id === expId);
   if (!exp) return null;
   const of = (kind, field, id) => byKind(recs, kind).filter((r) => r[field] === id);
   const reagents = new Map(byKind(recs, "reagent").map((r) => [r.id, r]));
@@ -60,7 +60,7 @@ export function experimentText(exp) {
 }
 
 export function folderHistory(recs, expId) {
-  const exp = recs.find((r) => r.kind === "experiment" && r.id === expId);
+  const exp = recs.find((r) => r._t === "experiment" && r.id === expId);
   if (!exp || !exp.folder_id) return [];
   return byKind(recs, "experiment")
     .filter((e) => e.folder_id === exp.folder_id && e.id !== expId && e.created_at <= exp.created_at)
