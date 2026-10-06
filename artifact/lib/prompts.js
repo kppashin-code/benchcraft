@@ -166,11 +166,23 @@ export function digestInput(title, text, source) {
   return join(DIGEST_SYSTEM, `PAPER: ${title}\nWHAT YOU WERE GIVEN: ${source}\n\nTEXT:\n${text}`, DIGEST_SHAPE);
 }
 
+// Column summaries for the data attached to an entry, so a brief or slides can cite real numbers.
+export function dataText(exp) {
+  const ds = exp.datasets || [];
+  if (!ds.length) return "";
+  return "DATA ATTACHED TO THIS ENTRY (summaries computed in the browser, not by a model):\n" + ds.map((d) => {
+    const cols = (d.columns || []).map((c) => c.numeric
+      ? `${c.name}: n=${c.n}, mean ${c.mean}${c.sd != null ? `, sd ${c.sd}` : ""}, range ${c.min} to ${c.max}`
+      : `${c.name}: ${(c.examples || []).slice(0, 5).join(", ")}`).join("; ");
+    return `  - ${d.label || d.filename} (${d.kind}${d.n_rows != null ? `, ${d.n_rows} rows` : ""})${cols ? `: ${cols}` : ""}`;
+  }).join("\n");
+}
+
 export function briefInput(project, experiments) {
   const blocks = [];
   for (const exp of experiments) {
     for (const c of exp.commitments) {
-      let block = [...observationText(exp, c), ...interpretationText(c)].join("\n\n");
+      let block = [...observationText(exp, c), ...interpretationText(c), dataText(exp)].filter(Boolean).join("\n\n");
       for (const ch of c.challenges) {
         block += "\n\nALTERNATIVES RAISED BY THE CHALLENGE: "
           + ch.blind.explanations.map((e) => `${e.label}: ${e.statement}`).join("; ");
@@ -189,3 +201,43 @@ export function briefInput(project, experiments) {
 
 export const checkGlossary = (g) => (g && Array.isArray(g.entries) && g.entries.every((e) => isStr(e.term) && isStr(e.plain)) ? "" : "entries missing");
 export const checkDigest = (d) => (d && isStr(d.main_claim) && isStrList(d.experiments || []) ? "" : "main claim missing");
+
+const SLIDES_SYSTEM = `You lay out a short slide deck for a lab meeting, strictly from a researcher's own record.
+
+You are a compiler, not an author. Every claim on a slide must be traceable to the record below. Do not add findings, literature, or interpretation the researcher did not write, and do not raise the confidence of anything they hedged. Where the record is thin, make fewer slides.
+
+Use the researcher's own words where you can. Short bullets, at most five a slide, at most fifteen words a bullet. Never use an em dash.
+
+When an attached dataset has a numeric column worth showing, you may ask for a chart: name the dataset label exactly as given and one to four numeric column names exactly as given. The page draws the chart from the real file; never write numbers into a chart yourself.`;
+
+const SLIDES_SHAPE = {
+  title: "Deck title, under ten words.",
+  subtitle: "One line: the project or folder and the date range covered.",
+  slides: [{
+    title: "Slide title, under eight words.",
+    bullets: ["Short bullet in the researcher's voice."],
+    chart: { dataset: "Exact dataset label, or empty string for no chart.", columns: ["Exact numeric column names, empty list for no chart."], kind: "'bar' for comparing columns' means, 'line' for a series in row order." },
+    notes: "Speaker notes: two or three sentences the researcher could say, from the record only.",
+  }],
+};
+
+export function slidesInput(title, experiments) {
+  const blocks = experiments.map((exp) => {
+    const parts = [`ENTRY: ${exp.title} (${(exp.created_at || "").slice(0, 10)})`, `QUESTION: ${exp.question || "(not stated)"}`];
+    const ctx = Object.entries(exp.context || {}).map(([k, v]) => `${k}: ${v}`).join("; ");
+    if (ctx) parts.push(`CONDITIONS: ${ctx}`);
+    const notes = (exp.notes || []).filter((n) => n.source !== "protocol").map((n) => `  - ${n.body}`);
+    if (notes.length) parts.push("BENCH NOTES:\n" + notes.join("\n"));
+    for (const c of exp.commitments || []) {
+      parts.push(...interpretationText(c), `WHAT WAS OBSERVED:\n${c.observed}`);
+      for (const ch of c.challenges || []) for (const r of ch.responses || []) parts.push(`AFTER THE CHALLENGE THEY ${r.stance.toUpperCase()} THEIR VIEW: ${r.reasoning}`);
+      if (c.resolution) parts.push(`HOW IT TURNED OUT: ${c.resolution.verdict}${c.resolution.notes ? `, ${c.resolution.notes}` : ""}`);
+    }
+    const d = dataText(exp);
+    if (d) parts.push(d);
+    return parts.join("\n");
+  });
+  return join(SLIDES_SYSTEM, `DECK FOR: ${title}\n\n=== THE RECORD ===\n\n` + blocks.join("\n\n---\n\n"), SLIDES_SHAPE);
+}
+
+export const checkSlides = (d) => (d && isStr(d.title) && Array.isArray(d.slides) && d.slides.length && d.slides.every((x) => isStr(x.title) && isStrList(x.bullets || [])) ? "" : "slides missing");

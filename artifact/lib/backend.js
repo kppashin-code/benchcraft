@@ -392,10 +392,10 @@ route("DELETE", "/annotations/{id}", async ({ id }) => {
 route("GET", "/datasets/{id}", async ({ id }) => {
   const d = need("dataset", id, "dataset");
   let prev = { header: [], rows: [] };
-  if (d.asset_id && datafiles.ALLOWED[datafiles.suffixOf(d.filename)] === "table") {
-    try { prev = datafiles.preview(d.filename, await (await fetch(fileUrl(d))).text()); } catch { /* preview is optional */ }
+  if ((d.asset_id || d.drive_id) && datafiles.ALLOWED[datafiles.suffixOf(d.filename)] === "table") {
+    try { prev = datafiles.preview(d.filename, await datasetText(d)); } catch { /* preview is optional */ }
   }
-  return { ...d, exists: !!d.asset_id, preview: prev };
+  return { ...d, exists: !!(d.asset_id || d.drive_id), preview: prev };
 });
 route("PUT", "/datasets/{id}", async ({ id }, b) => {
   await upd(need("dataset", id, "dataset"), { kind: b.kind, label: b.label, notes: b.notes });
@@ -658,6 +658,231 @@ route("PUT", "/todo_notes", async (_, b) => {
   if (old) await upd(old, { body: String(b.body ?? ""), updated_at: now() });
   else await ins("todo_notes", { body: String(b.body ?? ""), updated_at: now() });
   return all("todo_notes")[0];
+});
+
+// ---------- freezer and cell lines ----------
+
+const vialLabel = (v) => {
+  const line = v.cell_line_id ? get("cell_line", v.cell_line_id) : null;
+  const reagent = v.reagent_id ? get("reagent", v.reagent_id) : null;
+  return line ? `${line.name}${v.passage ? ` P${v.passage}` : ""}` : reagent ? reagent.name : v.contents || "vial";
+};
+const freezer = (pid) => all("storage").filter((s) => s.project_id === Number(pid)).sort((a, b) => a.name.localeCompare(b.name)).map((s) => ({
+  ...s,
+  boxes: all("box").filter((b) => b.storage_id === s.id).sort((a, b) => (a.position || "").localeCompare(b.position || "") || a.id - b.id).map((b) => ({
+    ...b,
+    vials: all("vial").filter((v) => v.box_id === b.id && !v.removed_at).map((v) => ({ ...v, label: vialLabel(v) })),
+  })),
+}));
+const lineBundle = (l) => ({
+  ...l,
+  parent_name: l.parent_id ? (get("cell_line", l.parent_id) || {}).name || "" : "",
+  children: all("cell_line").filter((c) => c.parent_id === l.id).map((c) => ({ id: c.id, name: c.name })),
+  vials_left: all("vial").filter((v) => v.cell_line_id === l.id && !v.removed_at).length,
+  events: all("line_event").filter((e) => e.cell_line_id === l.id).sort((a, b) => (a.date || a.created_at) < (b.date || b.created_at) ? 1 : -1)
+    .map((e) => ({ ...e, experiment_title: e.experiment_id ? (get("experiment", e.experiment_id) || {}).title || "" : "" })),
+});
+const lines = (pid) => all("cell_line").filter((l) => l.project_id === Number(pid)).sort((a, b) => a.name.localeCompare(b.name)).map(lineBundle);
+const str = (v) => String(v ?? "").trim();
+const today = () => new Date().toISOString().slice(0, 10);
+
+route("GET", "/projects/{pid}/freezer", ({ pid }) => freezer(pid));
+route("POST", "/projects/{pid}/storages", async ({ pid }, b) => {
+  if (!str(b.name)) fail("Name the freezer, fridge or tank.");
+  await ins("storage", { project_id: Number(pid), name: str(b.name), type: str(b.type) || "-80", location: str(b.location) });
+  return freezer(pid);
+});
+route("PUT", "/storages/{id}", async ({ id }, b) => { const s = need("storage", id); await upd(s, { name: str(b.name) || s.name, type: str(b.type) || s.type, location: str(b.location) }); return freezer(s.project_id); });
+route("DELETE", "/storages/{id}", async ({ id }) => {
+  const s = need("storage", id);
+  if (all("box").some((b) => b.storage_id === s.id)) fail("Move or remove its boxes first.");
+  await del(s); return freezer(s.project_id);
+});
+route("POST", "/storages/{id}/boxes", async ({ id }, b) => {
+  const s = need("storage", id);
+  const rows = Math.min(12, Math.max(1, Number(b.rows) || 9)), cols = Math.min(12, Math.max(1, Number(b.cols) || 9));
+  await ins("box", { storage_id: s.id, label: str(b.label) || "Box", position: str(b.position), rows, cols });
+  return freezer(s.project_id);
+});
+route("PUT", "/boxes/{id}", async ({ id }, b) => {
+  const x = need("box", id);
+  await upd(x, { label: str(b.label) || x.label, position: str(b.position), ...(b.storage_id ? { storage_id: Number(b.storage_id) } : {}) });
+  return freezer(get("storage", x.storage_id).project_id);
+});
+route("DELETE", "/boxes/{id}", async ({ id }) => {
+  const x = need("box", id);
+  if (all("vial").some((v) => v.box_id === x.id && !v.removed_at)) fail("Empty the box first.");
+  await del(x); return freezer(get("storage", x.storage_id).project_id);
+});
+route("POST", "/boxes/{id}/vials", async ({ id }, b) => {
+  const box = need("box", id);
+  const row = Number(b.row), col = Number(b.col);
+  if (!(row >= 0 && row < box.rows && col >= 0 && col < box.cols)) fail("That position is outside the box.");
+  if (all("vial").some((v) => v.box_id === box.id && !v.removed_at && v.row === row && v.col === col)) fail("That position is taken.");
+  const v = await ins("vial", {
+    box_id: box.id, row, col, cell_line_id: b.cell_line_id ? Number(b.cell_line_id) : null, reagent_id: b.reagent_id ? Number(b.reagent_id) : null,
+    contents: str(b.contents), passage: str(b.passage), frozen_on: str(b.frozen_on) || today(), frozen_by: str(b.frozen_by), notes: str(b.notes), removed_at: null,
+  });
+  if (v.cell_line_id) await ins("line_event", { cell_line_id: v.cell_line_id, type: "frozen", passage: v.passage, date: v.frozen_on, experiment_id: b.experiment_id ? Number(b.experiment_id) : null, note: `${box.label} ${String.fromCharCode(65 + row)}${col + 1}` });
+  return freezer(get("storage", box.storage_id).project_id);
+});
+route("PUT", "/vials/{id}", async ({ id }, b) => {
+  const v = need("vial", id);
+  const f = {};
+  for (const k of ["contents", "passage", "frozen_on", "frozen_by", "notes"]) if (k in b) f[k] = str(b[k]);
+  if ("box_id" in b || "row" in b) {
+    const box = need("box", b.box_id ?? v.box_id), row = Number(b.row ?? v.row), col = Number(b.col ?? v.col);
+    if (all("vial").some((x) => x.id !== v.id && x.box_id === box.id && !x.removed_at && x.row === row && x.col === col)) fail("That position is taken.");
+    Object.assign(f, { box_id: box.id, row, col });
+  }
+  await upd(v, f);
+  return freezer(get("storage", get("box", f.box_id || v.box_id).storage_id).project_id);
+});
+route("POST", "/vials/{id}/thaw", async ({ id }, b) => {
+  const v = need("vial", id);
+  if (v.removed_at) fail("This vial is already out.");
+  await upd(v, { removed_at: now(), removed_for: b.experiment_id ? Number(b.experiment_id) : null, removed_note: str(b.note) });
+  if (v.cell_line_id) await ins("line_event", { cell_line_id: v.cell_line_id, type: "thawed", passage: v.passage, date: today(), experiment_id: b.experiment_id ? Number(b.experiment_id) : null, note: str(b.note) });
+  if (v.reagent_id && b.experiment_id) await ins("reagent_use", { reagent_id: v.reagent_id, experiment_id: Number(b.experiment_id), amount: null, note: "one vial from the freezer" });
+  return freezer(get("storage", get("box", v.box_id).storage_id).project_id);
+});
+route("GET", "/projects/{pid}/freezer/find", ({ pid }, _, q) => {
+  const term = (q.get("q") || "").toLowerCase();
+  if (!term) return [];
+  return freezer(pid).flatMap((s) => s.boxes.flatMap((b) => b.vials.filter((v) => `${v.label} ${v.contents} ${v.notes}`.toLowerCase().includes(term))
+    .map((v) => ({ ...v, box_label: b.label, storage_name: s.name, where: `${s.name}, ${b.label}, ${String.fromCharCode(65 + v.row)}${v.col + 1}` }))));
+});
+
+route("GET", "/projects/{pid}/lines", ({ pid }) => lines(pid));
+route("POST", "/projects/{pid}/lines", async ({ pid }, b) => {
+  if (!str(b.name)) fail("A name, at least.");
+  await ins("cell_line", { project_id: Number(pid), name: str(b.name), species: str(b.species), source: str(b.source), parent_id: b.parent_id ? Number(b.parent_id) : null, myco_tested: str(b.myco_tested), notes: str(b.notes) });
+  return lines(pid);
+});
+route("PUT", "/lines/{id}", async ({ id }, b) => {
+  const l = need("cell_line", id, "cell line");
+  const f = {};
+  for (const k of ["name", "species", "source", "myco_tested", "notes"]) if (k in b) f[k] = str(b[k]);
+  if ("parent_id" in b) f.parent_id = b.parent_id && Number(b.parent_id) !== l.id ? Number(b.parent_id) : null;
+  await upd(l, f);
+  return lines(l.project_id);
+});
+route("POST", "/lines/{id}/events", async ({ id }, b) => {
+  const l = need("cell_line", id, "cell line");
+  if (!["passaged", "thawed", "frozen", "split", "tested", "discarded", "note"].includes(b.type)) fail("Pick what happened.");
+  await ins("line_event", { cell_line_id: l.id, type: b.type, passage: str(b.passage), date: str(b.date) || today(), experiment_id: b.experiment_id ? Number(b.experiment_id) : null, note: str(b.note) });
+  if (b.type === "tested") await upd(get("cell_line", l.id), { myco_tested: str(b.date) || today() });
+  return lines(l.project_id);
+});
+route("DELETE", "/line_events/{id}", async ({ id }) => { const e = need("line_event", id, "entry"); await del(e); return lines(get("cell_line", e.cell_line_id).project_id); });
+
+// ---------- Google Drive, through the connector on the viewer's Claude account ----------
+
+export const DRIVE = "Google Drive";
+async function drive(tool, args) {
+  const m = window.claude ? await window.claude.use("mcp") : null;
+  if (!m) fail("Google Drive is reached through your Claude account. Open Benchcraft inside Claude.");
+  try {
+    const r = await m.callTool(DRIVE, tool, args);
+    return r.payload ?? JSON.parse(r.content?.[0]?.text || "null");
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    if (e.code === "server_not_connected") fail("Connect Google Drive in claude.ai Settings, Connectors, then try again.");
+    if (e.code === "not_granted") fail("Benchcraft was not allowed to use Google Drive in this view. Allow it from the artifact's permissions menu.");
+    fail(`Google Drive said no (${e.code || e.message}).`);
+  }
+}
+
+// The download tool hands back base64; this finds it whatever the field is called.
+function decodeDownload(out) {
+  const pick = (o) => {
+    if (typeof o === "string") return o;
+    if (!o || typeof o !== "object") return "";
+    for (const k of ["content", "data", "base64Content", "base64", "fileContent", "text"]) if (typeof o[k] === "string") return o[k];
+    for (const v of Object.values(o)) { const s = pick(v); if (s) return s; }
+    return "";
+  };
+  const raw = pick(out);
+  if (/^[A-Za-z0-9+/=\s]+$/.test(raw) && raw.length % 4 === 0) {
+    try { return new TextDecoder().decode(Uint8Array.from(atob(raw.replace(/\s/g, "")), (c) => c.charCodeAt(0))); } catch { /* not base64 after all */ }
+  }
+  return raw;
+}
+
+const DATA_MIME = ["text/csv", "text/tab-separated-values", "text/plain", "application/vnd.google-apps.spreadsheet"];
+const quote = (s) => String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+
+route("GET", "/drive/search", async (_, __, q) => {
+  const term = (q.get("q") || "").trim();
+  const types = DATA_MIME.map((m) => `mimeType = '${m}'`).join(" or ");
+  const query = term ? `title contains '${quote(term)}' and (${types})` : `(${types})`;
+  const out = await drive("search_files", { query, pageSize: 15, excludeContentSnippets: true });
+  return (out && out.files) || [];
+});
+
+route("POST", "/experiments/{id}/datasets/drive", async ({ id }, b) => {
+  const e = need("experiment", id, "experiment");
+  const sheet = b.mimeType === "application/vnd.google-apps.spreadsheet";
+  const text = decodeDownload(await drive("download_file_content", { fileId: b.fileId, exportMimeType: "text/csv" }));
+  if (!text.trim()) fail("That file came back empty.");
+  const filename = sheet ? `${b.title}.csv` : b.title;
+  const prof = datafiles.profile(/\.(csv|tsv|txt)$/i.test(filename) ? filename : filename + ".csv", text);
+  const d = await ins("dataset", {
+    project_id: e.project_id, experiment_id: e.id, kind: b.kind || "other", label: String(b.title).replace(/\.[^.]+$/, ""),
+    filename, asset_id: null, drive_id: b.fileId, drive_url: b.viewUrl || "", size_bytes: new Blob([text]).size,
+    n_rows: prof.n_rows, n_cols: prof.n_cols, columns: prof.columns, notes: "",
+  });
+  return { dataset_id: d.id, experiment: exp(e.id) };
+});
+
+route("POST", "/datasets/{id}/to_drive", async ({ id }) => {
+  const d = need("dataset", id, "dataset");
+  if (d.drive_id) return d;
+  if (!d.asset_id) fail("There is no file stored for this dataset.");
+  const text = await (await fetch(fileUrl(d))).text();
+  const f = await drive("create_file", { title: d.filename, textContent: text, contentMimeType: "text/csv", disableConversionToGoogleType: true });
+  await upd(d, { drive_id: f.id, drive_url: f.viewUrl || "" });
+  return get("dataset", id);
+});
+
+async function datasetText(d) {
+  if (d.asset_id) return (await fetch(fileUrl(d))).text();
+  if (d.drive_id) return decodeDownload(await drive("download_file_content", { fileId: d.drive_id, exportMimeType: "text/csv" }));
+  return "";
+}
+export async function datasetRows(id) {
+  const d = need("dataset", id, "dataset");
+  return datafiles.parse(await datasetText(d));
+}
+
+route("POST", "/projects/{pid}/brief/to_drive", async ({ pid }, b) => {
+  const project = need("project", pid, "project");
+  const f = await drive("create_file", { title: `${project.name} brief, ${new Date().toISOString().slice(0, 10)}`, textContent: b.markdown || "", contentMimeType: "text/markdown" });
+  return { id: f.id, url: f.viewUrl || "" };
+});
+
+route("POST", "/projects/{pid}/slides", async ({ pid }, b) => {
+  const project = need("project", pid, "project");
+  let exps = all("experiment").filter((e) => e.project_id === project.id);
+  if (b.experiment_id) exps = exps.filter((e) => e.id === Number(b.experiment_id));
+  else if (b.folder_id) exps = exps.filter((e) => e.folder_id === Number(b.folder_id));
+  if (!exps.length) fail("Nothing in that scope yet.");
+  exps = exps.sort((a, c) => (a.created_at < c.created_at ? -1 : 1)).map((e) => exp(e.id));
+  const scope = b.experiment_id ? exps[0].title : b.folder_id ? (get("folder", b.folder_id) || {}).name : project.name;
+  const deck = await ask(P.slidesInput(scope, exps), { check: P.checkSlides });
+  const labels = new Map(exps.flatMap((e) => e.datasets).map((d) => [d.label || d.filename, d]));
+  for (const s of deck.slides) {
+    const want = s.chart && s.chart.dataset && labels.get(s.chart.dataset);
+    if (!want) { s.chart = null; continue; }
+    const cols = (s.chart.columns || []).filter((c) => (want.columns || []).some((x) => x.name === c && x.numeric)).slice(0, 4);
+    s.chart = cols.length ? { dataset_id: want.id, dataset: want.label || want.filename, columns: cols, kind: s.chart.kind === "line" ? "line" : "bar" } : null;
+  }
+  return deck;
+});
+
+route("POST", "/slides/to_drive", async (_, b) => {
+  const f = await drive("create_file", { title: b.title || "Benchcraft slides", base64Content: b.base64, contentMimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation" });
+  return { id: f.id, url: f.viewUrl || "" };
 });
 
 async function R_get(path) { return api(path); }

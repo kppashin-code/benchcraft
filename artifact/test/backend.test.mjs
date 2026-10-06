@@ -139,3 +139,24 @@ test("amounts written in a note come off the shelf, and come back if the note go
   assert.equal((await B.api(`/reagents/${dmem.id}`)).amount_left, 500);
   assert.equal(x.reagents.length, 0);
 });
+
+test("vials go into boxes, thaw against an entry, and show up in the line's history", async () => {
+  const p = await B.api("/projects", "POST", { name: "freezer", description: "" });
+  const ls = await B.api(`/projects/${p.id}/lines`, "POST", { name: "SFC840-03-03", species: "human iPSC" });
+  await B.api(`/projects/${p.id}/lines`, "POST", { name: "SFC840 TH-reporter", parent_id: ls[0].id });
+  let f = await B.api(`/projects/${p.id}/storages`, "POST", { name: "-80 A", type: "-80" });
+  f = await B.api(`/storages/${f[0].id}/boxes`, "POST", { label: "iPSC box 1", position: "shelf 2", rows: 9, cols: 9 });
+  const box = f[0].boxes[0];
+  f = await B.api(`/boxes/${box.id}/vials`, "POST", { row: 0, col: 2, cell_line_id: ls[0].id, passage: "33" });
+  await assert.rejects(B.api(`/boxes/${box.id}/vials`, "POST", { row: 0, col: 2, contents: "x" }), /taken/);
+  const vial = f[0].boxes[0].vials[0];
+  assert.equal(vial.label, "SFC840-03-03 P33");
+  assert.equal((await B.api(`/projects/${p.id}/freezer/find?q=sfc840`))[0].where, "-80 A, iPSC box 1, A3");
+  const e = await B.api(`/projects/${p.id}/experiments`, "POST", { title: "Thaw for run 5", mode: "notebook" });
+  f = await B.api(`/vials/${vial.id}/thaw`, "POST", { experiment_id: e.id });
+  assert.equal(f[0].boxes[0].vials.length, 0);
+  const line = (await B.api(`/projects/${p.id}/lines`)).find((l) => l.name === "SFC840-03-03");
+  assert.deepEqual(line.events.map((x) => x.type).sort(), ["frozen", "thawed"]);
+  assert.equal(line.children[0].name, "SFC840 TH-reporter");
+  assert.equal((await B.api(`/experiments/${e.id}`)).cell_events[0].line_name, "SFC840-03-03");
+});

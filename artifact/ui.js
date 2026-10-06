@@ -1,5 +1,7 @@
 import * as B from "./lib/backend.js";
 import { showTodos } from "./todo.js";
+import { openFreezer } from "./freezer.js";
+import { openSlides } from "./slides.js";
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c =>
@@ -411,6 +413,10 @@ function render() {
     </div>
     ${renderDatasets()}
     ${renderReagentsUsed()}
+    ${(EXP.cell_events || []).length ? `<div class="card"><h3>Cell lines</h3>
+      ${EXP.cell_events.map(e => `<div class="small" style="margin-bottom:5px"><strong>${esc(e.line_name)}</strong>
+        ${esc(e.type)}${e.passage ? `, P${esc(e.passage)}` : ""}${e.note ? `, ${esc(e.note)}` : ""}
+        <span class="muted tiny">${esc(e.date || e.created_at.slice(0, 10))}</span></div>`).join("")}</div>` : ""}
     ${renderInk()}
     ${renderLinkedPapers()}
     ${renderConnectorOutput()}
@@ -910,10 +916,19 @@ function renderDataRail() {
           </div>
           <div class="m">${esc(d.kind)}${d.n_rows != null
             ? `, ${d.n_rows} rows x ${d.n_cols} cols` : ""}, ${(d.size_bytes / 1024).toFixed(0)} kB</div>
+          <div class="tiny" style="margin-top:3px">${d.drive_url ? `<a href="${esc(d.drive_url)}" target="_blank" rel="noopener">in Drive</a>`
+            : d.asset_id ? `<button class="link" data-todrive="${d.id}">save to Drive</button>` : ""}</div>
         </div>`).join("") : `<div class="small muted">Nothing attached yet.</div>`}
     </div>
     <button class="ghost sm" id="ds-all" style="margin-top:14px;width:100%">
       Compare across the project</button>
+    <div style="margin-top:20px;padding-top:14px;border-top:1px solid var(--rule)">
+      <h3>From Google Drive</h3>
+      <p class="tiny muted" style="margin-top:-5px">CSVs and Sheets from your Drive, attached to this entry. Wet or dry lab, the file stays in Drive.</p>
+      <div class="row"><input id="dr-q" placeholder="search your Drive" style="flex:1"><button class="ghost sm" id="dr-go">Search</button></div>
+      <div class="err tiny" id="dr-err"></div>
+      <div id="dr-out" style="margin-top:8px"></div>
+    </div>
   </div>`;
 
   const drop = $("#ds-drop"), file = $("#ds-file");
@@ -945,6 +960,31 @@ function renderDataRail() {
     render(); renderRail();
   });
   $("#ds-all").onclick = openDataView;
+  $("#rail").querySelectorAll("[data-todrive]").forEach(el => el.onclick = async () => {
+    el.textContent = "saving…";
+    try { await api(`/datasets/${el.dataset.todrive}/to_drive`, "POST"); EXP = await api(`/experiments/${EXP.id}`); renderRail(); }
+    catch (e) { el.textContent = "save to Drive"; $("#ds-err").textContent = e.message; }
+  });
+  const drSearch = async () => {
+    $("#dr-err").textContent = "";
+    $("#dr-out").innerHTML = `<span class="tiny muted">${SPIN} searching</span>`;
+    try {
+      const files = await api(`/drive/search?q=${encodeURIComponent($("#dr-q").value)}`);
+      $("#dr-out").innerHTML = files.length ? files.map(f => `<div class="paper">
+        <div class="pt">${esc(f.title)}</div>
+        <div class="pm">${f.mimeType.includes("spreadsheet") ? "Sheet" : "file"}${f.modifiedTime ? `, ${f.modifiedTime.slice(0, 10)}` : ""}
+          ${EXP ? ` <button class="link" data-attach="${esc(f.id)}">attach here</button>` : ""}</div></div>`).join("")
+        : `<span class="small muted">Nothing found.</span>`;
+      $("#dr-out").querySelectorAll("[data-attach]").forEach(b => b.onclick = async () => {
+        const f = files.find(x => x.id === b.dataset.attach);
+        b.textContent = "reading…";
+        try { EXP = (await api(`/experiments/${EXP.id}/datasets/drive`, "POST", { fileId: f.id, title: f.title, mimeType: f.mimeType, viewUrl: f.viewUrl, kind: $("#ds-kind").value })).experiment; render(); renderRail(); }
+        catch (e) { b.textContent = "attach here"; $("#dr-err").textContent = e.message; }
+      });
+    } catch (e) { $("#dr-out").innerHTML = ""; $("#dr-err").textContent = e.message; }
+  };
+  $("#dr-go").onclick = drSearch;
+  $("#dr-q").onkeydown = (e) => { if (e.key === "Enter") drSearch(); };
 }
 
 async function openDataset(id) {
@@ -954,7 +994,7 @@ async function openDataset(id) {
     <h2 style="font-size:19px">${esc(d.label || d.filename)}</h2>
     <div class="small muted">${esc(d.kind)}, ${esc(d.filename)}, ${(d.size_bytes / 1024).toFixed(0)} kB
       ${d.n_rows != null ? `, ${d.n_rows} rows x ${d.n_cols} columns` : ""}</div>
-    <div class="tiny"><button class="link" id="ds-dl">download the original</button>
+    <div class="tiny">${d.drive_url ? `<a href="${esc(d.drive_url)}" target="_blank" rel="noopener">open in Google Drive</a>` : `<button class="link" id="ds-dl">download the original</button>`}
       <span class="muted" id="ds-dl-msg"></span></div>
 
     ${d.columns.length ? `<h3 style="margin-top:20px">Columns</h3>
@@ -977,7 +1017,7 @@ async function openDataset(id) {
     <p class="tiny muted" style="margin-top:14px">Benchcraft reads the shape of this file so you
     can see it. It does not interpret it, and no model has seen it.</p>`;
   modal.showModal();
-  $("#ds-dl").onclick = async () => {
+  if ($("#ds-dl")) $("#ds-dl").onclick = async () => {
     try { await B.download(B.datasetRecord(d.id)); } catch (e) { $("#ds-dl-msg").textContent = e.message; }
   };
 }
@@ -1891,7 +1931,20 @@ $("#btn-brief").onclick = async () => {
     const { markdown } = await api(`/projects/${PROJECT.id}/brief`);
     $("#modal-body").innerHTML = `<h2>Supervisor brief</h2>
       <p class="small muted">Compiled from what you wrote. No claim here is new.</p>
-      <div class="brief">${esc(markdown).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")}</div>`;
+      <div class="brief">${esc(markdown).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")}</div>
+      <div class="row" style="margin-top:14px;flex-wrap:wrap">
+        <button id="brief-drive">Save to Google Drive</button>
+        <button class="ghost" id="brief-slides">Make slides</button>
+        <span class="tiny muted" id="brief-msg"></span>
+      </div>`;
+    $("#brief-drive").onclick = async () => {
+      $("#brief-msg").textContent = "Saving…";
+      try {
+        const out = await api(`/projects/${PROJECT.id}/brief/to_drive`, "POST", { markdown });
+        $("#brief-msg").innerHTML = out.url ? `Saved. <a href="${esc(out.url)}" target="_blank" rel="noopener">Open in Google Docs</a>` : "Saved to your Drive.";
+      } catch (e) { $("#brief-msg").textContent = e.message; }
+    };
+    $("#brief-slides").onclick = () => openSlides(PROJECT, EXP, FOLDERS, AI);
   } catch (e) {
     $("#modal-body").innerHTML = `<h2>Supervisor brief</h2><div class="err">${esc(e.message)}</div>`;
   }
@@ -2163,7 +2216,17 @@ function reagentForm(r) {
 }
 
 $("#btn-bench").onclick = openBench;
-modal.addEventListener("close", () => { if (PROJECT) loadReagents(); });
+$("#btn-freezer").onclick = () => { modal.classList.add("wide"); openFreezer(PROJECT.id, TODO_ON ? null : EXP, async () => { if (EXP && !TODO_ON) { EXP = await api(`/experiments/${EXP.id}`); } }); };
+$("#btn-slides").onclick = () => openSlides(PROJECT, TODO_ON ? null : EXP, FOLDERS, AI);
+modal.addEventListener("close", () => {
+  if (PROJECT) loadReagents();
+  modal.classList.remove("wide");
+  if (EXP && !TODO_ON && $("#main .card")) {
+    const typing = document.activeElement && /TEXTAREA|INPUT/.test(document.activeElement.tagName) && $("#main").contains(document.activeElement);
+    const hasDraft = [...$("#main").querySelectorAll("textarea")].some(t => t.value.trim());
+    if (!typing && !hasDraft) render();
+  }
+});
 
 let TEMPLATES = [], CALC = { kind: "dilution", result: null };
 
