@@ -1,0 +1,7 @@
+{
+  "name": "benchcraft",
+  "owner": { "name": "Kristine Pashin" },
+  "plugins": [
+    { "name": "benchcraft", "source": "./plugin", "description": "Install Benchcraft, a lab notebook, as a private artifact on your own Claude account." }
+  ]
+}

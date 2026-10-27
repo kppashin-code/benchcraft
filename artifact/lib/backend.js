@@ -435,7 +435,10 @@ route("PUT", "/recordings/{id}/transcript", async ({ id }, b) => {
 route("GET", "/settings", () => ({ ai: false, ...(all("setting")[0] || {}) }));
 route("PUT", "/settings", async (_, b) => {
   const old = all("setting")[0];
-  const f = { ai: !!b.ai, updated_at: now() };
+  const f = { updated_at: now() };
+  if ("ai" in b) f.ai = !!b.ai;
+  if ("profile" in b) f.profile = b.profile;
+  if ("onboarded" in b) f.onboarded = !!b.onboarded;
   if (old) await upd(old, f); else await ins("setting", f);
   return all("setting")[0];
 });
@@ -464,7 +467,7 @@ route("POST", "/experiments/{id}/commitments", async ({ id }, b) => {
   if (!(b.observed || "").trim() || !(b.interpretation || "").trim()) fail("You need what you saw and what you make of it. Everything else is optional.");
   const c = await insChained("commitment", {
     experiment_id: Number(id), aim: b.aim || "", expected: b.expected || "", observed: b.observed, interpretation: b.interpretation,
-    confidence: b.confidence ?? null, disconfirming: b.disconfirming || "", proposed_next: b.proposed_next || "", locked_at: now(),
+    confidence: b.confidence ?? null, disconfirming: b.disconfirming || "", proposed_next: b.proposed_next || "", surprise: b.surprise || "", particular: b.particular || "", locked_at: now(),
   });
   return { commitment_id: c.id, experiment: exp(id) };
 });
@@ -1032,6 +1035,15 @@ route("GET", "/projects/{pid}/today", ({ pid }) => {
     approvals: all("approval").filter((a) => a.project_id === pid && a.status !== "approved" && a.status !== "declined"),
     checklists: all("checklist").filter((c) => c.project_id === pid).map((c) => ({ ...c, done_today: all("check_log").some((l) => l.checklist_id === c.id && l.date === day) })),
     judgment: judgment(recs, pid),
+    purpose: purposes(pid)[0] || null,
+    profile: (all("setting")[0] || {}).profile || null,
+    record: (() => {
+      const es = all("experiment").filter((e) => e.project_id === pid).map((e) => exp(e.id));
+      const withReading = es.filter((e) => e.commitments.length).length;
+      const resolved = es.filter((e) => e.commitments.some((c) => c.resolution && c.resolution.verdict !== "unresolved")).length;
+      const flagged = es.flatMap((e) => [...(e.early_challenges || []), ...e.commitments.flatMap((c) => c.challenges)]).reduce((n, ch) => n + ((ch.blind && ch.blind.missing_controls) || []).length, 0);
+      return { entries: es.length, with_reading: withReading, resolved, missing_controls_flagged: flagged, with_data: es.filter((e) => e.datasets.length || (e.figures || []).length).length };
+    })(),
     calibration: calibration(recs, pid),
   };
 });
@@ -1132,6 +1144,37 @@ route("POST", "/calendar/protect", async (_, b) => {
   return { link: (e && e.htmlLink) || "" };
 });
 
+// ---------- advice from anyone, weighed on its reasons ----------
+
+const SOURCES = ["supervisor", "peer", "paper", "protocol", "model", "other"];
+route("POST", "/experiments/{id}/advice", async ({ id }, b) => {
+  const e = need("experiment", id, "experiment");
+  if (!String(b.said || "").trim()) fail("Write down what the advice was.");
+  await ins("advice", { experiment_id: e.id, source_type: SOURCES.includes(b.source_type) ? b.source_type : "other", source_name: String(b.source_name || "").trim(),
+    said: String(b.said).trim(), their_reason: String(b.their_reason || "").trim(), stance: null, my_reason: "", weighed_at: null });
+  return exp(e.id);
+});
+route("PUT", "/advice/{id}", async ({ id }, b) => {
+  const a = need("advice", id, "advice");
+  const f = {};
+  if ("stance" in b) { if (b.stance && !["moves", "not", "unsure"].includes(b.stance)) fail("Pick whether it moves you."); f.stance = b.stance || null; f.weighed_at = now(); }
+  if ("my_reason" in b) f.my_reason = String(b.my_reason || "").trim();
+  if ("outcome" in b) f.outcome = String(b.outcome || "").trim();
+  await upd(a, f);
+  return exp(a.experiment_id);
+});
+route("DELETE", "/advice/{id}", async ({ id }) => { const a = need("advice", id, "advice"); await del(a); return exp(a.experiment_id); });
+
+// ---------- what the work is for, kept as versions ----------
+
+const purposes = (pid) => all("purpose").filter((p) => p.project_id === Number(pid)).sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+route("GET", "/projects/{pid}/purpose", ({ pid }) => ({ current: purposes(pid)[0] || null, history: purposes(pid).slice(1) }));
+route("POST", "/projects/{pid}/purpose", async ({ pid }, b) => {
+  if (!String(b.text || "").trim()) fail("Write a sentence or two.");
+  await ins("purpose", { project_id: Number(pid), text: String(b.text).trim(), why_changed: String(b.why_changed || "").trim() });
+  return { current: purposes(pid)[0], history: purposes(pid).slice(1) };
+});
+
 async function R_get(path) { return api(path); }
 
 export async function api(path, method = "GET", body) {
@@ -1201,10 +1244,11 @@ export const datasetRecord = (id) => get("dataset", id);
 
 // ---------- bringing in the old notebook, exported by export_notebook.py ----------
 
-export async function importOldNotebook(dump) {
+export async function importOldNotebook(dump, { example = false } = {}) {
   await init();
   if (!dump || dump.benchcraft_export !== 1) fail("That is not a Benchcraft export file.");
-  if (all("project").some((p) => p.imported)) fail("Your old notebook has already been brought in.");
+  if (example && all("project").some((p) => p.example)) fail("The example project is already here.");
+  if (!example && all("project").some((p) => p.imported)) fail("Your old notebook has already been brought in.");
   const map = {};
   const to = (table, old) => (old == null ? null : (map[table] || {})[old] ?? null);
   const set = (table, old, id) => { (map[table] ||= {})[old] = id; };
@@ -1214,8 +1258,9 @@ export async function importOldNotebook(dump) {
 
   const empty = all("project").find((p) => ![...all("experiment"), ...all("folder"), ...all("reagent")].some((e) => e.project_id === p.id));
   for (const p of rows("projects")) {
-    if (empty) { await upd(empty, { name: p.name, description: p.description, imported: true }); set("projects", p.id, empty.id); }
-    else { const n = await ins("project", { ...strip(p), imported: true }); set("projects", p.id, n.id); }
+    const mark = example ? { example: true, name: `Example: ${p.name}` } : { imported: true };
+    if (empty) { await upd(empty, { name: p.name, description: p.description, ...mark }); set("projects", p.id, empty.id); }
+    else { const n = await ins("project", { ...strip(p), ...mark }); set("projects", p.id, n.id); }
   }
   for (const f of rows("folders")) set("folders", f.id, (await ins("folder", { ...strip(f), project_id: to("projects", f.project_id) })).id);
   for (const e of rows("experiments")) {
@@ -1266,4 +1311,9 @@ export async function __insertChallengeForTest(experimentId, blind) {
   await init();
   const c = await insChained("challenge", { experiment_id: Number(experimentId), commitment_id: null, model: "test", blind, divergence: null, created_at: now() });
   return c.id;
+}
+
+export async function loadExample() {
+  const dump = await (await fetch("lib/example.json")).json();
+  return importOldNotebook(dump, { example: true });
 }

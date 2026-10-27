@@ -21,6 +21,7 @@ const BLIND_SHAPE = {
     reads_out: "What result would favour which explanation. Be explicit: 'if X, that argues for explanation 2 and against 1'.",
   },
   record_is_silent_on: ["What you needed to know and were not told. This is feedback on the researcher's record-keeping, not on their science."],
+  questions_for_you: ["Two or three questions that test the researcher's reasons for whatever they end up concluding, specific to this record. Ask what would have to be true, what they are assuming, or what a sceptical colleague would ask. Questions only: never hint at which answer is right."],
   recurs_in_this_protocol: ["Only if you were given PRIOR RUNS OF THIS PROTOCOL. Each item names a specific earlier run by title and says what it shares with this one: the same direction of effect, the same batch, the same thing going wrong at the same step. Say plainly if a pattern has now appeared more than twice. Empty list if you were given no prior runs, or if there is genuinely no recurrence. Never invent a resemblance to fill this in."],
 };
 
@@ -90,6 +91,8 @@ function interpretationText(c) {
   if (c.confidence != null) parts.push(`THEIR STATED CONFIDENCE: ${c.confidence}/100`);
   if (c.disconfirming) parts.push(`WHAT THEY SAID WOULD CHANGE THEIR MIND:\n${c.disconfirming}`);
   if (c.proposed_next) parts.push(`THE NEXT EXPERIMENT THEY PROPOSED:\n${c.proposed_next}`);
+  if (c.surprise) parts.push(`WHAT SURPRISED THEM:\n${c.surprise}`);
+  if (c.particular) parts.push(`WHAT THEY SAID WAS PARTICULAR ABOUT THIS RUN:\n${c.particular}`);
   return parts;
 }
 
@@ -122,6 +125,7 @@ export function checkBlind(b) {
   if (!Array.isArray(b.confounders) || !isStrList(b.missing_controls) || !b.discriminating_experiment) return "missing sections";
   b.record_is_silent_on = isStrList(b.record_is_silent_on) ? b.record_is_silent_on : [];
   b.recurs_in_this_protocol = isStrList(b.recurs_in_this_protocol) ? b.recurs_in_this_protocol : [];
+  b.questions_for_you = isStrList(b.questions_for_you) ? b.questions_for_you.slice(0, 4) : [];
   return "";
 }
 

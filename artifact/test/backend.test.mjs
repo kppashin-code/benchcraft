@@ -215,3 +215,35 @@ test("my own templates sit beside the built-in ones and start an entry", async (
   const e = await B.api(`/projects/${p.id}/experiments`, "POST", { title: "Coat plates", template: mine.id });
   assert.equal(e.notes.filter((n) => n.source === "protocol").length, 2);
 });
+
+test("advice from any source is weighed and counted by source", async () => {
+  const p = await B.api("/projects", "POST", { name: "advice", description: "" });
+  const e = await B.api(`/projects/${p.id}/experiments`, "POST", { title: "Run 6" });
+  let x = await B.api(`/experiments/${e.id}/advice`, "POST", { source_type: "supervisor", source_name: "PI", said: "drop the outer wells", their_reason: "" });
+  x = await B.api(`/experiments/${e.id}/advice`, "POST", { source_type: "paper", said: "humidify the plate", their_reason: "evaporation" });
+  await B.api(`/advice/${x.advice[0].id}`, "PUT", { stance: "moves", my_reason: "" });
+  await B.api(`/advice/${x.advice[1].id}`, "PUT", { stance: "moves", my_reason: "it explains the gradient across columns" });
+  const j = await B.api(`/projects/${p.id}/judgment`);
+  assert.equal(j.sources.supervisor.weighed, 1);
+  assert.equal(j.sources.supervisor.reasoned, 0);
+  assert.equal(j.sources.paper.reasoned, 1);
+  await assert.rejects(B.api(`/experiments/${e.id}/advice`, "POST", { said: "" }), /what the advice was/);
+});
+
+test("purpose keeps its earlier versions", async () => {
+  const p = await B.api("/projects", "POST", { name: "purpose", description: "" });
+  await B.api(`/projects/${p.id}/purpose`, "POST", { text: "Find out whether stiffness drives the gap." });
+  const out = await B.api(`/projects/${p.id}/purpose`, "POST", { text: "Find out what the material contributes, apart from stiffness.", why_changed: "run 4" });
+  assert.match(out.current.text, /apart from stiffness/);
+  assert.equal(out.history.length, 1);
+});
+
+test("the example project loads once and keeps its chain sound", async () => {
+  const fs = await import("node:fs");
+  const dump = JSON.parse(fs.readFileSync(new URL("../lib/example.json", import.meta.url), "utf8"));
+  const out = await B.importOldNotebook(dump, { example: true });
+  assert.equal(out.experiments, 5);
+  assert.ok((await B.api("/projects")).some((x) => x.example && x.name.startsWith("Example: ")));
+  await assert.rejects(B.importOldNotebook(dump, { example: true }), /already here/);
+  assert.equal(await B.chainCheck(), null);
+});

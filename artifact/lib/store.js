@@ -7,7 +7,7 @@ export const KINDS = [
   "commitment", "challenge", "response", "resolution", "glossary", "connector",
   "connector_call", "paper_digest", "paper_note", "experiment_paper", "todo", "todo_notes", "setting",
   "storage", "box", "vial", "cell_line", "line_event", "figure",
-  "training", "booking", "rota", "checklist", "check_log", "approval", "contact", "user_template", "weigh", "deck", "plan",
+  "training", "booking", "rota", "checklist", "check_log", "approval", "contact", "user_template", "weigh", "deck", "plan", "advice", "purpose",
 ];
 
 const docId = (rec) => String(rec.id);

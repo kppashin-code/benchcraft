@@ -39,6 +39,7 @@ export function bundle(recs, expId) {
       .map((cc) => ({ ...strip(cc), connector_name: (connectors.get(cc.connector_id) || {}).name })).filter((cc) => cc.connector_name),
     commitments,
     figures: of("figure", "experiment_id", expId).sort(byTime("created_at")).map(strip),
+    advice: of("advice", "experiment_id", expId).sort(byTime("created_at")).map(strip),
     cell_events: of("line_event", "experiment_id", expId).sort(byTime("created_at")).map((ev) => ({
       ...strip(ev), line_name: (recs.find((r) => r._t === "cell_line" && r.id === ev.cell_line_id) || {}).name || "",
     })),
@@ -150,6 +151,23 @@ export function judgment(recs, projectId) {
   const reasoned = (w) => (w.reason || "").trim().split(/\s+/).filter(Boolean).length >= 4;
   const count = (f) => ws.filter(f).length;
   const offered = chs.reduce((n, ch) => n + ((ch.blind && ch.blind.explanations) || []).length, 0);
+  // Advice from people, papers or protocols is weighed the same way, so sources can be compared.
+  const advice = byKind(recs, "advice").filter((a) => exps.has(a.experiment_id));
+  const sources = {};
+  const tally = (src, stance, why) => {
+    const t = (sources[src] ||= { weighed: 0, reasoned: 0, moved: 0, unweighed: 0 });
+    if (!stance) { t.unweighed += 1; return; }
+    t.weighed += 1;
+    if (stance === "moves") t.moved += 1;
+    if (stance === "unsure" || reasoned({ reason: why })) t.reasoned += 1;
+  };
+  for (const w of ws) tally("model", w.stance, w.reason);
+  for (const a of advice) tally(a.source_type || "other", a.stance, a.my_reason);
+  const surprises = byKind(recs, "commitment").filter((c) => exps.has(c.experiment_id) && (c.surprise || "").trim())
+    .sort(byTime("locked_at")).reverse().slice(0, 8)
+    .map((c) => ({ experiment_id: c.experiment_id, text: c.surprise, date: c.locked_at.slice(0, 10), title: (recs.find((r) => r._t === "experiment" && r.id === c.experiment_id) || {}).title || "" }));
+  const perExp = {};
+  for (const c of byKind(recs, "commitment").filter((c) => exps.has(c.experiment_id))) perExp[c.experiment_id] = (perExp[c.experiment_id] || 0) + 1;
   return {
     opinions: chs.length, possibilities: offered, weighed: ws.length,
     moved_reasoned: count((w) => w.stance === "moves" && reasoned(w)),
@@ -158,5 +176,7 @@ export function judgment(recs, projectId) {
     not_unreasoned: count((w) => w.stance === "not" && !reasoned(w)),
     unsure: count((w) => w.stance === "unsure"),
     left_unweighed: Math.max(0, offered - ws.length),
+    sources, surprises,
+    revised_entries: Object.values(perExp).filter((n) => n > 1).length,
   };
 }

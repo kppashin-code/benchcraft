@@ -78,7 +78,7 @@ def literature_search(query: str, include_preprints: bool = False, reviews_only:
     return out
 
 
-OWNER = "kppashin-code"
+_OWNER: list[str] = []
 IMAGES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".svg": "image/svg+xml", ".gif": "image/gif", ".webp": "image/webp"}
 GH = shutil.which("gh") or "/opt/homebrew/bin/gh"
 
@@ -90,8 +90,14 @@ def _gh(path: str):
     return json.loads(out.stdout)
 
 
+def _owner() -> str:
+    if not _OWNER:
+        _OWNER.append(_gh("user")["login"])
+    return _OWNER[0]
+
+
 def _full(repo: str) -> str:
-    return repo if "/" in repo else f"{OWNER}/{repo}"
+    return repo if "/" in repo else f"{_owner()}/{repo}"
 
 
 @server.tool(annotations=OPEN, description="Your GitHub repositories, most recently updated first.")

@@ -1,0 +1,8 @@
+{
+  "name": "benchcraft",
+  "version": "0.1.0",
+  "description": "Install Benchcraft, a lab notebook, as a private artifact on your own Claude account.",
+  "author": { "name": "Kristine Pashin" },
+  "repository": "https://github.com/kppashin-code/benchcraft",
+  "license": "MIT"
+}

@@ -73,10 +73,10 @@ function dayStrip() {
         <span><i class="key booking"></i>bookings</span><span><i class="key event"></i>calendar</span>
       </div>
     </div>
-    <div class="strip">
+    ${items.length ? `<div class="strip">
       ${hours.map((h) => `<span class="hr" style="left:${pct(h * 60)}%">${h}</span>`).join("")}
       ${items.map((i) => `<div class="blk ${i.kind}" style="left:${pct(i.start)}%;width:${Math.max(1.5, pct(i.end) - pct(i.start))}%" title="${esc(i.label)}"><span>${esc(i.label)}</span></div>`).join("")}
-    </div>
+    </div>` : ""}
     ${clashes.length ? `<p class="small" style="color:var(--amber);margin:8px 0 0">${clashes.length} meeting${clashes.length > 1 ? "s" : ""} cut${clashes.length > 1 ? "" : "s"} into maker time today: ${clashes.map((c) => esc(c.label)).join(", ")}.</p>` : ""}
     ${!blocks.length ? `<p class="small muted" style="margin:8px 0 0">No maker or manager blocks for ${DAYS[new Date().getDay()]} yet. Set your week below, so bench time is protected before the meetings land.</p>` : ""}
     <details class="plan-edit"><summary class="small">Set my week</summary>${planEditor()}</details>
@@ -108,6 +108,45 @@ function planEditor() {
     <p class="tiny muted" style="margin-top:6px">A maker morning and a manager afternoon is a common split: one long stretch for the bench or analysis, meetings batched after.</p>`;
 }
 
+// What the work is for. Ends get revisited too, not only the means to them.
+function purposeBox() {
+  const p = T.purpose;
+  const stale = p && (Date.now() - Date.parse(p.created_at)) > 30 * 86400000;
+  return `<div class="purpose">
+    <div class="sub-h" style="margin-top:0">What this work is for</div>
+    ${p ? `<div class="ptext">${esc(p.text)}</div><div class="tiny muted">written ${esc(p.created_at.slice(0, 10))}${stale ? `. A month on: is it still what matters, or has the work shown you something else?` : ""}</div>` : `<div class="small muted">A sentence or two on what you are trying to find out, and why it matters to you. You can revise it as the work changes your mind.</div>`}
+    <details style="margin-top:6px" ${p ? "" : "open"}><summary class="tiny">${p ? "Revise it" : "Write it"}</summary>
+      <textarea id="pp-text" rows="2" style="margin-top:6px">${esc(p ? p.text : "")}</textarea>
+      ${p ? `<input id="pp-why" placeholder="what changed your mind, if anything" style="margin-top:5px">` : ""}
+      <button class="ghost sm" id="pp-save" style="margin-top:6px">Save</button></details>
+  </div>`;
+}
+
+// The things you said you wanted to get better at, each with one honest number from the record.
+const GOAL_LABEL = { confounders: "Spotting confounders", calibration: "Knowing how sure to be", record: "A record someone could follow", weighing: "Weighing advice on its reasons", writing: "Turning work into writing" };
+function goalsBox() {
+  const goals = (T.profile && T.profile.goals) || [];
+  if (!goals.length) return "";
+  const r = T.record, j = T.judgment, c = T.calibration;
+  const reasonedPct = j.weighed ? Math.round(100 * (j.moved_reasoned + j.not_reasoned + j.unsure) / j.weighed) : null;
+  const line = {
+    confounders: `${r.missing_controls_flagged} missing control${r.missing_controls_flagged === 1 ? "" : "s"} raised across your second opinions`,
+    calibration: c.brier_score != null ? `Brier ${c.brier_score} over ${c.resolved_n} outcome${c.resolved_n === 1 ? "" : "s"}; ${c.tracked_confidence_n} readings with a stated confidence` : `${c.tracked_confidence_n} readings with a stated confidence, none resolved yet`,
+    record: `${r.with_reading} of ${r.entries} entries have a reading, ${r.resolved} an outcome, ${r.with_data} data or figures`,
+    weighing: reasonedPct != null ? `${reasonedPct}% of what you weighed came with a reason` : "nothing weighed yet",
+    writing: "briefs and slides come from the record above, so a fuller record makes them better",
+  };
+  return `<div class="goals-row">${goals.map((g) => `<div class="goal"><div class="sub-h" style="margin:0">${esc(GOAL_LABEL[g] || g)}</div><div class="small">${esc(line[g] || "")}</div></div>`).join("")}</div>`;
+}
+
+function sourcesTable(src) {
+  const rows = Object.entries(src || {}).filter(([, t]) => t.weighed || t.unweighed);
+  if (!rows.length) return "";
+  return `<table class="srcs"><tr><th>from</th><th>weighed</th><th>with a reason</th><th>moved you</th></tr>${rows.map(([k, t]) => `<tr>
+    <td>${esc(k)}</td><td>${t.weighed}${t.unweighed ? ` <span class="tiny muted">(+${t.unweighed} not yet)</span>` : ""}</td>
+    <td>${t.weighed ? Math.round(100 * t.reasoned / t.weighed) + "%" : ""}</td><td>${t.weighed ? Math.round(100 * t.moved / t.weighed) + "%" : ""}</td></tr>`).join("")}</table>`;
+}
+
 function card(title, body, foot = "") {
   return `<section class="td-sec card-like"><h3>${title}</h3>${body}${foot}</section>`;
 }
@@ -117,6 +156,8 @@ function draw() {
   const j = t.judgment, c = t.calibration;
   ROOT.innerHTML = `<div class="td-wrap today">
     <h2 class="td-h">Today</h2>
+    ${purposeBox()}
+    ${goalsBox()}
     ${dayStrip()}
     <div class="today-grid">
       ${card("Next experiments you wrote", t.next.length ? t.next.map((n) => `<div class="tl">
@@ -144,11 +185,15 @@ function draw() {
       ${card("Bookings this week", t.bookings.length ? t.bookings.map((b) => `<div class="tl small"><strong>${esc(b.resource)}</strong>
         ${new Date(b.start).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })} ${hm(b.start)}–${hm(b.end)}${Number(b.buffer_min) ? `, then ${b.buffer_min} min UV or cleaning` : ""}${b.purpose ? `<div class="tiny muted">${esc(b.purpose)}</div>` : ""}</div>`).join("")
         : `<p class="small muted">No hoods, rooms or instruments booked.</p>`, `<button class="ghost sm" data-tool="lab-bookings" style="margin-top:10px">Book something</button>`)}
-      ${card("How you weigh a second opinion", j.weighed ? `
-        <div class="jbar">${[["moved_reasoned", "moved, with a reason"], ["not_reasoned", "not moved, with a reason"], ["moved_unreasoned", "moved, no reason"], ["not_unreasoned", "not moved, no reason"], ["unsure", "unsure"]].map(([k, l]) => j[k] ? `<span class="jseg ${k}" style="flex:${j[k]}" title="${l}: ${j[k]}"></span>` : "").join("")}</div>
-        <div class="tiny muted" style="margin-top:6px">${j.moved_reasoned + j.not_reasoned} of ${j.weighed} weighed with a reason${j.left_unweighed ? `, ${j.left_unweighed} possibilities not weighed yet` : ""}. The aim is not to agree or disagree more, it is to know why.</div>
-        ${c.brier_score != null ? `<div class="tiny muted" style="margin-top:6px">Calibration: Brier ${c.brier_score} over ${c.resolved_n} outcome${c.resolved_n === 1 ? "" : "s"}.</div>` : ""}`
-        : `<p class="small muted">When you get a second opinion, mark what moves you and why. This shows the pattern over time.</p>`)}
+      ${card("Surprises", j.surprises.length ? j.surprises.map((x) => `<div class="tl"><button class="link tl-t" data-exp="${x.experiment_id}">${esc(x.title)}</button>
+        <div class="small">${esc(x.text)}</div><div class="tiny muted">${esc(x.date)}</div></div>`).join("")
+        + `<div class="tiny muted" style="margin-top:6px">${j.revised_entries ? `${j.revised_entries} entr${j.revised_entries === 1 ? "y has" : "ies have"} more than one reading: your view moved.` : ""}</div>`
+        : `<p class="small muted">When a run goes against what you expected, note it in your reading. Those are the runs that teach the most.</p>`)}
+      ${card("How you weigh advice", j.weighed || Object.keys(j.sources || {}).length ? `${sourcesTable(j.sources)}`
+        + (j.weighed ? `<div class="jbar" style="margin-top:10px">${[["moved_reasoned", "moved, with a reason"], ["not_reasoned", "not moved, with a reason"], ["moved_unreasoned", "moved, no reason"], ["not_unreasoned", "not moved, no reason"], ["unsure", "unsure"]].map(([k, l]) => j[k] ? `<span class="jseg ${k}" style="flex:${j[k]}" title="${l}: ${j[k]}"></span>` : "").join("")}</div>` : "")
+        + `<div class="tiny muted" style="margin-top:6px">Neither taking advice nor refusing it shows judgment by itself. The reasons do, whoever the advice came from.</div>`
+        + (c.brier_score != null ? `<div class="tiny muted" style="margin-top:6px">Calibration: Brier ${c.brier_score} over ${c.resolved_n} outcome${c.resolved_n === 1 ? "" : "s"}.</div>` : "")
+        : `<p class="small muted">Log advice on an entry, from anyone, and weigh it. This shows whether your reasons hold up evenly across sources.</p>`)}
     </div>
   </div>`;
   wire();
@@ -164,6 +209,11 @@ function wire() {
       b.outerHTML = out.url ? `<a href="${esc(out.url)}" target="_blank" rel="noopener">draft ready in Gmail, check and send it</a>` : `<span class="tiny">draft saved in Gmail for ${esc(out.to)}</span>`;
     } catch (e) { b.textContent = "draft a note to the lab manager"; $("#alert-err").textContent = e.message; }
   });
+  const pp = $("#pp-save");
+  if (pp) pp.onclick = async () => {
+    try { await B.api(`/projects/${PID}/purpose`, "POST", { text: $("#pp-text").value, why_changed: $("#pp-why") ? $("#pp-why").value : "" }); T = await B.api(`/projects/${PID}/today`); draw(); }
+    catch (e) { pp.insertAdjacentHTML("afterend", `<span class="err tiny"> ${esc(e.message)}</span>`); }
+  };
   ROOT.querySelectorAll("[data-protect]").forEach((b) => b.onclick = async () => {
     const blk = T.blocks.find((x) => x.id === +b.dataset.protect);
     const d = new Date(), date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;

@@ -13,9 +13,9 @@ const exp = { _t: "experiment", id: 1, project_id: 9, title: "Edge wells read lo
 const commitment = { _t: "commitment", id: 2, experiment_id: 1, aim: "check uniformity", expected: "flat signal", observed: "outer ring 18% lower", interpretation: SECRET, confidence: 70, disconfirming: "humidified plate shows the same", proposed_next: "repeat with a humidity tray", locked_at: "2026-10-01T11:00:00" };
 
 test("blind input never contains the interpretation or its companions", () => {
-  const text = blindInput({ ...exp, notes: [], recordings: [] }, commitment);
+  const text = blindInput({ ...exp, notes: [], recordings: [] }, { ...commitment, surprise: "SURPRISED by the gradient", particular: "PARTICULAR to plate 3" });
   assert.ok(text.includes("outer ring 18% lower"));
-  for (const hidden of [SECRET, "humidified plate shows the same", "repeat with a humidity tray", "70/100"]) {
+  for (const hidden of [SECRET, "humidified plate shows the same", "repeat with a humidity tray", "70/100", "SURPRISED", "PARTICULAR"]) {
     assert.ok(!text.includes(hidden), `leaked: ${hidden}`);
   }
 });

@@ -110,7 +110,9 @@ async function boot() {
     projects = [await api("/projects", "POST", { name: "Untitled project", description: "" })];
   }
   PROJECT = projects[0];
-  AI = !!(await api("/settings")).ai;
+  const settings = await api("/settings");
+  AI = !!settings.ai;
+  if (!settings.onboarded) setTimeout(() => welcome(settings), 400);
   paintAi();
   TEMPLATES = await api("/templates");
   TSTATUS = await api("/transcription/status");
@@ -354,6 +356,7 @@ function render() {
       ${EXP.cell_events.map(e => `<div class="small" style="margin-bottom:5px"><strong>${esc(e.line_name)}</strong>
         ${esc(e.type)}${e.passage ? `, P${esc(e.passage)}` : ""}${e.note ? `, ${esc(e.note)}` : ""}
         <span class="muted tiny">${esc(e.date || e.created_at.slice(0, 10))}</span></div>`).join("")}</div>` : ""}
+    ${renderAdvice()}
     ${renderFigures()}
     ${renderInk()}
     ${renderLinkedPapers()}
@@ -381,6 +384,8 @@ function renderCommitment(c) {
       ${c.expected ? `<dt>Expected</dt><dd>${esc(c.expected)}</dd>` : ""}
       <dt>Observed</dt><dd>${withHighlights(c.observed)}</dd>
       ${c.disconfirming ? `<dt>Would change your mind</dt><dd>${esc(c.disconfirming)}</dd>` : ""}
+      ${c.surprise ? `<dt>What surprised me</dt><dd>${esc(c.surprise)}</dd>` : ""}
+      ${c.particular ? `<dt>Particular to this run</dt><dd>${esc(c.particular)}</dd>` : ""}
       ${c.proposed_next ? `<dt>Next experiment you proposed</dt><dd>${esc(c.proposed_next)}</dd>` : ""}
     </dl>
     <div class="tiny muted" style="margin-top:16px">
@@ -399,6 +404,36 @@ function renderDatasets() {
       <div class="m">${esc(d.kind)}${d.n_rows != null
         ? `, ${d.n_rows} rows x ${d.n_cols} cols` : ""}</div>
     </div>`).join("")}
+  </div>`;
+}
+
+// Advice from anyone, weighed by its reasons rather than by who gave it.
+const SOURCE_LABEL = { supervisor: "supervisor", peer: "peer", paper: "paper", protocol: "protocol", model: "model", other: "other" };
+function renderAdvice() {
+  const list = EXP.advice || [];
+  const opt = (a, v, l) => `<button class="wt ${a.stance === v ? "on" : ""}" data-adv="${a.id}" data-stance="${v}">${l}</button>`;
+  return `<div class="card">
+    <h3>Advice</h3>
+    <p class="tiny muted" style="margin-top:-6px">From a supervisor, a colleague, a paper, a protocol or a model. Weigh each one on its reasons.</p>
+    ${list.map(a => `<div class="adv">
+      <div class="row" style="gap:8px;flex-wrap:wrap"><span class="pill">${esc(SOURCE_LABEL[a.source_type] || a.source_type)}</span>${a.source_name ? `<span class="small"><strong>${esc(a.source_name)}</strong></span>` : ""}
+        <span class="tiny muted">${a.created_at.slice(0, 10)}</span><span style="flex:1"></span><button class="link" data-advrm="${a.id}">remove</button></div>
+      <div style="margin-top:4px">${esc(a.said)}</div>
+      ${a.their_reason ? `<div class="small muted">Their reason: ${esc(a.their_reason)}</div>` : `<div class="tiny muted">No reason given with it.</div>`}
+      <div class="weigh">
+        <div class="row" style="gap:6px;flex-wrap:wrap">${opt(a, "moves", "This moves me")}${opt(a, "not", "This does not")}${opt(a, "unsure", "Not sure yet")}</div>
+        <input class="weigh-why" data-advwhy="${a.id}" placeholder="because…" value="${esc(a.my_reason || "")}">
+      </div></div>`).join("")}
+    <details ${list.length ? "" : "open"}><summary class="small">Add advice</summary>
+      <div class="ctx-row" style="grid-template-columns:1fr 2fr;margin-top:8px">
+        <select id="adv-src">${Object.entries(SOURCE_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select>
+        <input id="adv-who" placeholder="who or which paper">
+      </div>
+      <textarea id="adv-said" rows="2" placeholder="what they suggested"></textarea>
+      <input id="adv-why" placeholder="the reason they gave, if any" style="margin-top:5px">
+      <button class="ghost sm" id="adv-add" style="margin-top:8px">Add</button>
+      <div class="err tiny" id="adv-err"></div>
+    </details>
   </div>`;
 }
 
@@ -660,6 +695,11 @@ function renderCommitForm() {
       <label>Conclusions</label>
       <textarea id="f-interpretation" rows="4" placeholder="what you make of it"></textarea>`}
 
+    <label>What surprised me <span class="hint">Optional. Where it went against what you expected.</span></label>
+    <textarea id="f-surprise" rows="2"></textarea>
+    <label>What is particular about this run <span class="hint">Optional. Where the protocol or the usual rule did not quite fit.</span></label>
+    <textarea id="f-particular" rows="2"></textarea>
+
     ${PREFS.confidence ? `
       <label>How confident are you? <span id="conflabel" class="conf">60</span>/100</label>
       <input type="range" id="f-confidence" min="0" max="100" value="60" style="padding:0">` : ""}
@@ -713,6 +753,8 @@ function renderOpinionOnly(ch) {
       <div class="body"><strong>${esc(e.label)}.</strong> ${esc(e.statement)}</div>
       ${ul(e.supports, "pro")}${ul(e.contradicts, "con")}
       <div class="kill">Ruled out by: ${esc(e.would_rule_out)}</div>${weighBox(ch, i)}</div>`).join("")}
+${(b.questions_for_you || []).length ? `<div class="hypo qs"><div class="n">Questions for you</div>${ul(b.questions_for_you, "q")}
+      <div class="tiny muted" style="margin-top:6px">Worth answering in your notes or your next reading. They test your reasons; they do not have answers attached.</div></div>` : ""}
     <div class="hypo"><div class="n">What would distinguish these?</div>
       <div class="body">${esc(b.discriminating_experiment.description)}</div>
       <div class="small muted" style="margin-top:7px">${esc(b.discriminating_experiment.reads_out)}</div>
@@ -735,6 +777,8 @@ function renderChallenge(ch, c, resp) {
       ${weighBox(ch, i)}
     </div>`).join("")}
 
+  ${(b.questions_for_you || []).length ? `<div class="hypo qs"><div class="n">Questions for you</div>${ul(b.questions_for_you, "q")}
+      <div class="tiny muted" style="margin-top:6px">Worth answering in your notes or your next reading. They test your reasons; they do not have answers attached.</div></div>` : ""}
   <div class="hypo">
     <div class="n">What would distinguish these?</div>
     <div class="body">${esc(b.discriminating_experiment.description)}
@@ -1704,10 +1748,29 @@ function wire(c, ch) {
         confidence: $("#f-confidence") ? +$("#f-confidence").value : null,
         disconfirming: val("#f-disconfirming"),
         proposed_next: val("#f-next"),
+        surprise: val("#f-surprise"),
+        particular: val("#f-particular"),
       });
       EXP = out.experiment;
       render(); renderStages(); renderRail(); reloadLog(); paintChain();
     } catch (e) { lock.disabled = false; $("#lock-err").textContent = e.message; }
+  });
+
+  const advAdd = $("#adv-add");
+  if (advAdd) advAdd.onclick = async () => {
+    try {
+      EXP = await api(`/experiments/${EXP.id}/advice`, "POST", { source_type: $("#adv-src").value, source_name: $("#adv-who").value, said: $("#adv-said").value, their_reason: $("#adv-why").value });
+      render();
+    } catch (e) { $("#adv-err").textContent = e.message; }
+  };
+  $("#main").querySelectorAll("[data-adv]").forEach(b => b.onclick = async () => {
+    const why = $(`[data-advwhy="${b.dataset.adv}"]`);
+    EXP = await api(`/advice/${b.dataset.adv}`, "PUT", { stance: b.dataset.stance, my_reason: why ? why.value : "" }); render();
+  });
+  $("#main").querySelectorAll("[data-advwhy]").forEach(inp => inp.onchange = async () => { EXP = await api(`/advice/${inp.dataset.advwhy}`, "PUT", { my_reason: inp.value }); });
+  $("#main").querySelectorAll("[data-advrm]").forEach(b => b.onclick = async () => {
+    if (!b.dataset.sure) { b.dataset.sure = "1"; b.textContent = "click again"; return; }
+    EXP = await api(`/advice/${b.dataset.advrm}`, "DELETE"); render();
   });
 
   const figAdd = $("#fig-add");
@@ -2328,6 +2391,58 @@ document.querySelectorAll("#panebar .tab").forEach(t =>
   t.onclick = () => showPane(t.dataset.pane));
 NARROW.addEventListener("change", () => showPane(NARROW.matches ? "center" : "left"));
 if (NARROW.matches) showPane("center");
+
+// A short first-run setup: who you are, what you want to get better at, and how much help you want.
+const GOALS = [
+  ["confounders", "Spotting confounders and missing controls"],
+  ["calibration", "Knowing how sure to be"],
+  ["record", "Keeping a record someone could follow"],
+  ["weighing", "Weighing advice on its reasons"],
+  ["writing", "Turning work into writing and slides"],
+];
+function welcome(settings) {
+  const pr = settings.profile || {};
+  modal.classList.remove("wide");
+  $("#modal-body").innerHTML = `<h2>Welcome to Benchcraft</h2>
+    <p class="small muted">A notebook for wet and dry lab work that helps you think, not just record. A few questions so it fits how you work. You can change any of this later.</p>
+    <div class="ctx-row" style="grid-template-columns:1fr 1fr 1fr">
+      <div><label>You are</label><select id="w-role">${["PhD student", "Postdoc", "Research technician", "PI", "Undergraduate", "Other"].map(r => `<option ${pr.role === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
+      <div><label>Your work is</label><select id="w-lab">${["wet lab", "dry lab", "both"].map(r => `<option ${pr.lab === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
+      <div><label>Years in research</label><input id="w-years" type="number" min="0" value="${esc(pr.years ?? "")}"></div>
+    </div>
+    <label>What you are working on <span class="hint">A line is plenty.</span></label><input id="w-what" value="${esc(pr.what || "")}">
+    <label>What you want to get better at</label>
+    <div class="goals">${GOALS.map(([k, l]) => `<label class="row" style="margin:3px 0;font-weight:400"><input type="checkbox" data-goal="${k}" ${(pr.goals || []).includes(k) ? "checked" : ""} style="width:auto"> ${l}</label>`).join("")}</div>
+    <label>How you like to write things down</label>
+    <label class="row" style="margin:3px 0;font-weight:400"><input type="checkbox" id="w-guided" ${PREFS.guided ? "checked" : ""} style="width:auto"> Prompt me with questions when I write a reading</label>
+    <label class="row" style="margin:3px 0;font-weight:400"><input type="checkbox" id="w-conf" ${PREFS.confidence ? "checked" : ""} style="width:auto"> Ask how sure I am</label>
+    <label class="row" style="margin:3px 0;font-weight:400"><input type="checkbox" id="w-ai" ${AI ? "checked" : ""} style="width:auto"> Turn on agentic help: second opinions, definitions, digests, briefs and slides</label>
+    <div class="row" style="margin-top:16px;flex-wrap:wrap">
+      <button id="w-go">Start my notebook</button>
+      <button class="ghost" id="w-example">Start, and add an example project to explore</button>
+    </div>
+    <div class="err" id="w-err"></div>`;
+  modal.showModal();
+  const save = async () => {
+    const profile = { role: $("#w-role").value, lab: $("#w-lab").value, years: $("#w-years").value, what: $("#w-what").value.trim(),
+      goals: [...document.querySelectorAll("[data-goal]")].filter(x => x.checked).map(x => x.dataset.goal) };
+    setPref("guided", $("#w-guided").checked); setPref("confidence", $("#w-conf").checked);
+    AI = $("#w-ai").checked;
+    await api("/settings", "PUT", { profile, onboarded: true, ai: AI });
+    paintAi();
+  };
+  $("#w-go").onclick = async () => { await save(); modal.close(); if (EXP) render(); };
+  $("#w-example").onclick = async () => {
+    $("#w-example").disabled = true;
+    try {
+      await save();
+      await B.loadExample();
+      const projects = await api("/projects");
+      PROJECT = projects.find(p => p.example) || projects[0];
+      EXP = null; modal.close(); await refreshList();
+    } catch (e) { $("#w-example").disabled = false; $("#w-err").textContent = e.message; }
+  };
+}
 
 // Agentic help is opt-in; when it is on, nothing waits for a locked view.
 function paintAi() {
