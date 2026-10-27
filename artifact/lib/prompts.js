@@ -222,7 +222,7 @@ const SLIDES_SHAPE = {
   }],
 };
 
-export function slidesInput(title, experiments) {
+export function slidesInput(title, experiments, previous = null) {
   const blocks = experiments.map((exp) => {
     const parts = [`ENTRY: ${exp.title} (${(exp.created_at || "").slice(0, 10)})`, `QUESTION: ${exp.question || "(not stated)"}`];
     const ctx = Object.entries(exp.context || {}).map(([k, v]) => `${k}: ${v}`).join("; ");
@@ -239,7 +239,8 @@ export function slidesInput(title, experiments) {
     if ((exp.figures || []).length) parts.push("FIGURES ATTACHED (images from the researcher's own code):\n" + exp.figures.map((f) => `  - ${f.caption}`).join("\n"));
     return parts.join("\n");
   });
-  return join(SLIDES_SYSTEM, `DECK FOR: ${title}\n\n=== THE RECORD ===\n\n` + blocks.join("\n\n---\n\n"), SLIDES_SHAPE);
+  const prev = previous ? "\n\n=== THE PREVIOUS VERSION OF THIS DECK ===\nKeep every slide whose part of the record has not changed exactly as it was, in the same order. Change, add or drop only what the record now says differently.\n" + JSON.stringify({ title: previous.title, slides: previous.slides.map((s) => ({ title: s.title, bullets: s.bullets, notes: s.notes })) }) : "";
+  return join(SLIDES_SYSTEM, `DECK FOR: ${title}\n\n=== THE RECORD ===\n\n` + blocks.join("\n\n---\n\n") + prev, SLIDES_SHAPE);
 }
 
 export const checkSlides = (d) => (d && isStr(d.title) && Array.isArray(d.slides) && d.slides.length && d.slides.every((x) => isStr(x.title) && isStrList(x.bullets || [])) ? "" : "slides missing");

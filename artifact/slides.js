@@ -6,7 +6,7 @@ const $ = (s, root = document) => root.querySelector(s);
 const INK = "021C45", INK2 = "3F5873", PAPER = "F2F6F3", LINE = "D3DFD8";
 const SERIES = ["1D6F78", "1A56B8", "5AA9E6", "24664F"];
 
-let DECK = null, CTX = null;
+let DECK = null, CTX = null, DECK_ID = null, BODY = {};
 
 export function openSlides(project, exp, folders, ai) {
   CTX = { project, exp, folders, ai };
@@ -22,17 +22,41 @@ export function openSlides(project, exp, folders, ai) {
       ${folders.filter((f) => !folder || f.id !== folder.id).map((f) => `<option value="f${f.id}">Folder: ${esc(f.name)}</option>`).join("")}
       <option value="project">Everything in ${esc(project.name)}</option>
     </select>
+    <div id="sl-decks"></div>
     ${ai ? `<div style="margin-top:14px"><button class="ai" id="sl-go">Make slides</button></div>`
       : `<p class="small muted" style="margin-top:14px">Turn on agentic help in the bookmarks bar to make slides.</p>`}
     <div class="err" id="sl-err"></div>
     <div id="sl-out"></div>`;
   if (!modal.open) modal.showModal();
+  DECK_ID = null;
+  B.api(`/projects/${project.id}/decks`).then((ds) => {
+    if (!ds.length) return;
+    $("#sl-decks").innerHTML = `<h3 style="margin-top:16px">Your decks</h3>${ds.map((d) => `<div class="tl small"><strong>${esc(d.title)}</strong>
+      <span class="tiny muted">updated ${esc(d.updated_at.slice(0, 10))}${d.drive_url ? `, <a href="${esc(d.drive_url)}" target="_blank" rel="noopener">in Drive</a>` : ""}</span>
+      ${ai ? `<button class="link" data-update="${d.id}">update with what has changed</button>` : ""}</div>`).join("")}`;
+    document.querySelectorAll("[data-update]").forEach((b) => b.onclick = async () => {
+      const d = ds.find((x) => x.id === +b.dataset.update);
+      b.textContent = "updating…";
+      try {
+        DECK = await B.api(`/projects/${project.id}/slides`, "POST", { ...d.scope, deck_id: d.id });
+        DECK_ID = d.id; BODY = d.scope;
+        await B.api(`/projects/${project.id}/decks`, "POST", { id: d.id, deck: DECK, scope: d.scope });
+        preview();
+      } catch (e) { b.textContent = "update with what has changed"; $("#sl-err").textContent = e.message; }
+    });
+  }).catch(() => {});
   const go = $("#sl-go");
   if (go) go.onclick = async () => {
     const v = $("#sl-scope").value;
     const body = v === "exp" ? { experiment_id: exp.id } : v === "folder" ? { folder_id: folder.id } : v.startsWith("f") ? { folder_id: Number(v.slice(1)) } : {};
     go.disabled = true; go.textContent = "Laying them out…"; $("#sl-err").textContent = "";
-    try { DECK = await B.api(`/projects/${project.id}/slides`, "POST", body); preview(); }
+    try {
+      DECK = await B.api(`/projects/${project.id}/slides`, "POST", body);
+      BODY = body;
+      const ds = await B.api(`/projects/${project.id}/decks`, "POST", { deck: DECK, scope: body });
+      DECK_ID = ds[0] && ds[0].id;
+      preview();
+    }
     catch (e) { $("#sl-err").textContent = e.message; }
     go.disabled = false; go.textContent = "Make them again";
   };
@@ -56,8 +80,10 @@ function preview() {
     msg.textContent = "Saving…";
     try {
       const pptx = await build();
-      const out = await B.api("/slides/to_drive", "POST", { title: DECK.title, base64: await pptx.write({ outputType: "base64" }) });
-      msg.innerHTML = out.url ? `Saved. <a href="${esc(out.url)}" target="_blank" rel="noopener">Open in Google Slides</a>` : "Saved to your Drive.";
+      const out = DECK_ID
+        ? await B.api(`/decks/${DECK_ID}/to_drive`, "POST", { base64: await pptx.write({ outputType: "base64" }) })
+        : await B.api("/slides/to_drive", "POST", { title: DECK.title, base64: await pptx.write({ outputType: "base64" }) });
+      msg.innerHTML = out.url ? `Saved. <a href="${esc(out.url)}" target="_blank" rel="noopener">Open in Google Slides</a>. Any earlier copy moved to "Benchcraft, earlier versions".` : "Saved to your Drive.";
     } catch (e) { msg.textContent = e.message; }
   };
   $("#sl-dl").onclick = async () => {

@@ -2,6 +2,8 @@ import * as B from "./lib/backend.js";
 import { showTodos } from "./todo.js";
 import { openFreezer } from "./freezer.js";
 import { openSlides } from "./slides.js";
+import { showToday } from "./today.js";
+import { openLab } from "./lab.js";
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c =>
@@ -300,7 +302,11 @@ function render() {
 
   $("#main").innerHTML = `
     <div class="card">
-      <h2>${esc(EXP.title)}</h2>
+      <div class="row" style="justify-content:space-between;align-items:flex-start;gap:12px">
+        <h2>${esc(EXP.title)}</h2>
+        <div style="text-align:right;flex:none"><button class="ghost sm" id="btn-share">Share to Drive</button>
+          <div class="tiny muted" id="share-msg">${EXP.shared_doc ? `<a href="${esc(EXP.shared_doc)}" target="_blank" rel="noopener">last shared ${esc((EXP.shared_at || "").slice(0, 10))}</a>` : ""}</div></div>
+      </div>
       ${EXP.question ? `<div class="qline"><b>Q:</b> ${esc(EXP.question)}</div>` : ""}
       ${ctx.length ? `<div class="ctx">${ctx.map(([k, v]) =>
         `<b>${esc(k)}:</b> ${esc(v)}`).join("&nbsp;&nbsp; ")}</div>` : ""}
@@ -688,6 +694,17 @@ function renderSecondOpinion() {
       <div class="err" id="second-err"></div></div>` : ""}`;
 }
 
+// Under each possibility: does it move you, and why. Neither answer counts for more than the reason.
+function weighBox(ch, i) {
+  const w = [...(ch.weighs || [])].reverse().find(x => x.index === i);
+  const opt = (v, l) => `<button class="wt ${w && w.stance === v ? "on" : ""}" data-weigh="${ch.id}" data-i="${i}" data-stance="${v}">${l}</button>`;
+  return `<div class="weigh">
+    <div class="row" style="gap:6px;flex-wrap:wrap">${opt("moves", "This moves me")}${opt("not", "This does not")}${opt("unsure", "Not sure yet")}</div>
+    <input class="weigh-why" data-why="${ch.id}:${i}" placeholder="because…" value="${esc(w ? w.reason : "")}">
+    ${w && w.stance !== "unsure" && (w.reason || "").trim().split(/\s+/).filter(Boolean).length < 4 ? `<div class="tiny" style="color:var(--amber)">Say why, in a few words. The reason is the part worth keeping.</div>` : ""}
+  </div>`;
+}
+
 function renderOpinionOnly(ch) {
   const b = ch.blind;
   return `<div class="sect-label">Second opinion &middot; ${ch.created_at.slice(0, 10)}</div>
@@ -695,7 +712,7 @@ function renderOpinionOnly(ch) {
       <div class="n">Possibility ${pad2(i + 1)} &middot; ${esc(e.kind)}</div>
       <div class="body"><strong>${esc(e.label)}.</strong> ${esc(e.statement)}</div>
       ${ul(e.supports, "pro")}${ul(e.contradicts, "con")}
-      <div class="kill">Ruled out by: ${esc(e.would_rule_out)}</div></div>`).join("")}
+      <div class="kill">Ruled out by: ${esc(e.would_rule_out)}</div>${weighBox(ch, i)}</div>`).join("")}
     <div class="hypo"><div class="n">What would distinguish these?</div>
       <div class="body">${esc(b.discriminating_experiment.description)}</div>
       <div class="small muted" style="margin-top:7px">${esc(b.discriminating_experiment.reads_out)}</div>
@@ -715,6 +732,7 @@ function renderChallenge(ch, c, resp) {
       <div class="body"><strong>${esc(e.label)}.</strong> ${esc(e.statement)}</div>
       ${ul(e.supports, "pro")}${ul(e.contradicts, "con")}
       <div class="kill">Ruled out by: ${esc(e.would_rule_out)}</div>
+      ${weighBox(ch, i)}
     </div>`).join("")}
 
   <div class="hypo">
@@ -1700,6 +1718,29 @@ function wire(c, ch) {
     EXP = await api(`/figures/${el.dataset.figrm}`, "DELETE"); render();
   });
 
+  const weigh = async (chId, i, stance) => {
+    const why = $(`[data-why="${chId}:${i}"]`);
+    try { EXP = await api(`/challenges/${chId}/weigh`, "POST", { index: i, stance, reason: why ? why.value : "" }); render(); }
+    catch (e) { const err = $("#second-err"); if (err) err.textContent = e.message; }
+  };
+  $("#main").querySelectorAll("[data-weigh]").forEach(b => b.onclick = () => weigh(+b.dataset.weigh, +b.dataset.i, b.dataset.stance));
+  $("#main").querySelectorAll("[data-why]").forEach(inp => inp.onchange = () => {
+    const [chId, i] = inp.dataset.why.split(":").map(Number);
+    const on = $(`[data-weigh="${chId}"][data-i="${i}"].on`);
+    weigh(chId, i, on ? on.dataset.stance : "unsure");
+  });
+
+  const share = $("#btn-share");
+  if (share) share.onclick = async () => {
+    share.disabled = true; share.textContent = "Sharing…";
+    try {
+      const out = await api(`/experiments/${EXP.id}/share`, "POST");
+      $("#share-msg").innerHTML = out.url ? `<a href="${esc(out.url)}" target="_blank" rel="noopener">Open the Google Doc</a>, then share it from Drive.` : "Saved to your Drive.";
+      EXP = await api(`/experiments/${EXP.id}`);
+    } catch (e) { $("#share-msg").textContent = e.message; }
+    share.disabled = false; share.textContent = "Share to Drive";
+  };
+
   const second = $("#btn-second");
   if (second) second.onclick = async () => {
     second.disabled = true;
@@ -1800,6 +1841,7 @@ function renderNewExperiment(parentId) {
       <div class="tpl ${t.id === (CTX_TPL || "blank") ? "on" : ""}" data-tpl="${t.id}">
         <div class="n">${esc(t.name)}</div>
         <div class="w">${esc(t.who)}</div>
+        ${t.caution ? `<div class="tiny" style="color:var(--amber);margin-top:3px">${esc(t.caution)}</div>` : ""}
       </div>`).join("");
     $("#tpl-list").querySelectorAll("[data-tpl]").forEach(el => el.onclick = () => {
       CTX_TPL = el.dataset.tpl;
@@ -2318,26 +2360,33 @@ async function paintChain() {
   $("#where").textContent = m.mode === "local" ? "saved in this browser only" : m.error ? `sync problem: ${m.error}` : m.full ? "storage list is full" : "";
 }
 
-// The to-do tab takes the whole width; the notebook comes back as it was left.
-let TODO_ON = false;
-async function setTodo(on) {
-  TODO_ON = on;
-  $("#todoview").hidden = !on;
-  $(".wrap").hidden = on;
-  $("#panebar").classList.toggle("off", on);
-  $("#stages").hidden = on;
-  $("#btn-todo").classList.toggle("on", on);
-  $("#pg-notebook").classList.toggle("on", !on);
-  $("#btn-todo").toggleAttribute("aria-current", on);
-  $("#pg-notebook").toggleAttribute("aria-current", !on);
-  $("#btn-pen").hidden = on;
-  if (on) await showTodos($("#todoview"), PROJECT.id, async (id) => { await setTodo(false); await openExperiment(id); });
+// Today and To-do take the whole width; the notebook comes back as it was left.
+let TODO_ON = false, PAGE = "notebook";
+async function setPage(page) {
+  PAGE = page;
+  TODO_ON = page !== "notebook";
+  $("#todoview").hidden = !TODO_ON;
+  $(".wrap").hidden = TODO_ON;
+  $("#panebar").classList.toggle("off", TODO_ON);
+  $("#stages").hidden = TODO_ON;
+  for (const [id, p] of [["#pg-notebook", "notebook"], ["#pg-today", "today"], ["#btn-todo", "todo"]]) {
+    $(id).classList.toggle("on", p === page);
+    $(id).toggleAttribute("aria-current", p === page);
+  }
+  $("#btn-pen").hidden = TODO_ON;
+  const toEntry = async (id) => { await setPage("notebook"); await openExperiment(id); };
+  if (page === "todo") await showTodos($("#todoview"), PROJECT.id, toEntry);
+  if (page === "today") await showToday($("#todoview"), PROJECT.id, toEntry, (tool) => openLab(PROJECT.id, null, tool === "lab-bookings" ? "bookings" : undefined));
 }
-$("#btn-todo").onclick = () => setTodo(true);
-$("#pg-notebook").onclick = () => setTodo(false);
+const setTodo = (on) => setPage(on ? "todo" : "notebook");
+$("#btn-todo").onclick = () => setPage("todo");
+$("#pg-notebook").onclick = () => setPage("notebook");
+$("#pg-today").onclick = () => setPage("today");
+$("#btn-lab").onclick = () => openLab(PROJECT.id, TODO_ON ? null : EXP);
 
 B.init().then(async () => {
   paintChain();
   await boot();
-  if (location.hash === "#todo") setTodo(true);
+  if (location.hash === "#todo") setPage("todo");
+  else if (location.hash === "#today") setPage("today");
 });

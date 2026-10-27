@@ -176,6 +176,13 @@ function lineDetail(l) {
       ${l.parent_name ? `<dt>Derived from</dt><dd>${esc(l.parent_name)}</dd>` : ""}
       ${l.children.length ? `<dt>Gave rise to</dt><dd>${l.children.map((c) => esc(c.name)).join(", ")}</dd>` : ""}
     </dl>
+    <div class="row" style="margin:8px 0;flex-wrap:wrap">
+      <label class="small" style="margin:0;font-weight:400">Keep at least</label>
+      <input id="ln-min" type="number" min="0" value="${l.min_vials ?? ""}" placeholder="10" style="width:70px">
+      <span class="small">vials</span><button class="ghost sm" id="ln-min-save" data-line-min="${l.id}">Set</button>
+      ${l.min_vials != null && l.vials_left < l.min_vials ? `<span class="small" style="color:var(--amber)">${l.vials_left} left, below ${l.min_vials}</span>
+        <button class="link" id="ln-alert" data-line-alert="${l.id}">draft a note to the lab manager</button>` : ""}
+    </div>
     <div class="row" style="margin:10px 0;flex-wrap:wrap">
       <select id="ev-type" style="width:auto">${EVENTS.map((e) => `<option>${e}</option>`).join("")}</select>
       <input id="ev-passage" placeholder="P" style="width:64px">
@@ -204,6 +211,14 @@ function wire() {
     if (add) add.onclick = () => act(() => B.api(`/projects/${PID}/lines`, "POST", { name: $("#ln-name").value, species: $("#ln-species").value, source: $("#ln-source").value, parent_id: $("#ln-parent").value || null }));
     const ev = $("#ev-add");
     if (ev) ev.onclick = () => act(() => B.api(`/lines/${ev.dataset.evline}/events`, "POST", { type: $("#ev-type").value, passage: $("#ev-passage").value, date: $("#ev-date").value, note: $("#ev-note").value, experiment_id: EXP ? EXP.id : null }));
+    const mn = $("#ln-min-save");
+    if (mn) mn.onclick = () => act(() => B.api(`/lines/${mn.dataset.lineMin}/min`, "PUT", { min_vials: $("#ln-min").value }));
+    const al = $("#ln-alert");
+    if (al) al.onclick = async () => {
+      al.textContent = "drafting…";
+      try { const out = await B.api(`/lines/${al.dataset.lineAlert}/alert_draft`, "POST"); al.outerHTML = out.url ? `<a href="${esc(out.url)}" target="_blank" rel="noopener">draft ready in Gmail</a>` : "draft saved in Gmail"; }
+      catch (e) { al.textContent = "draft a note to the lab manager"; $("#fz-err").textContent = e.message; }
+    };
     body.querySelectorAll("[data-delev]").forEach((b) => b.onclick = () => act(() => B.api(`/line_events/${b.dataset.delev}`, "DELETE")));
     return;
   }

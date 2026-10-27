@@ -1,7 +1,7 @@
 // The routes from benchcraft/app.py, answered inside the page against the researcher's own storage.
 import { openStore } from "./store.js";
 import { seal, verify, ledgerOf } from "./chain.js";
-import { bundle, stage, experimentText, folderHistory, calibration, graph, byKind } from "./cycle.js";
+import { bundle, stage, experimentText, folderHistory, calibration, graph, judgment, byKind } from "./cycle.js";
 import * as P from "./prompts.js";
 import * as calc from "./calc.js";
 import { TEMPLATES, byId as templateById } from "./templates.js";
@@ -244,7 +244,9 @@ route("POST", "/projects/{pid}/experiments", async ({ pid }, b) => {
     title: b.title, mode: ["notebook", "cycle"].includes(b.mode) ? b.mode : "notebook",
     question: b.question || "", context: b.context || {},
   });
-  const tpl = b.template ? templateById(b.template) : null;
+  const mine = String(b.template || "").match(/^u(\d+)$/);
+  const ut = mine ? get("user_template", mine[1]) : null;
+  const tpl = ut ? { protocol: ut.protocol || [], glossary: ut.glossary || [] } : b.template ? templateById(b.template) : null;
   if (tpl) {
     for (const step of tpl.protocol) await ins("note", { experiment_id: e.id, body: step, source: "protocol", recording_id: null });
     for (const [term, plain] of tpl.glossary) await upsertGlossary(pid, term, plain, "curated", false);
@@ -415,7 +417,7 @@ route("GET", "/projects/{pid}/datasets", ({ pid }) => all("dataset").filter((d) 
     return { ...d, experiment_title: e ? e.title : null, folder_name: f ? f.name : null };
   }));
 
-route("GET", "/templates", () => TEMPLATES);
+route("GET", "/templates", () => [...TEMPLATES, ...all("user_template").map((t) => ({ id: `u${t.id}`, name: t.name, who: t.who || "", mode: "notebook", context: t.context || {}, protocol: t.protocol || [], glossary: t.glossary || [], caution: t.caution || "", mine: true }))]);
 route("POST", "/calc", (_, b) => { try { return calc.run(b.kind, b.args || {}); } catch (e) { fail(e.message); } });
 
 route("GET", "/transcription/status", () => ({
@@ -680,6 +682,7 @@ const lineBundle = (l) => ({
   parent_name: l.parent_id ? (get("cell_line", l.parent_id) || {}).name || "" : "",
   children: all("cell_line").filter((c) => c.parent_id === l.id).map((c) => ({ id: c.id, name: c.name })),
   vials_left: all("vial").filter((v) => v.cell_line_id === l.id && !v.removed_at).length,
+  min_vials: l.min_vials ?? null,
   events: all("line_event").filter((e) => e.cell_line_id === l.id).sort((a, b) => (a.date || a.created_at) < (b.date || b.created_at) ? 1 : -1)
     .map((e) => ({ ...e, experiment_title: e.experiment_id ? (get("experiment", e.experiment_id) || {}).title || "" : "" })),
 });
@@ -870,7 +873,8 @@ route("POST", "/projects/{pid}/slides", async ({ pid }, b) => {
   if (!exps.length) fail("Nothing in that scope yet.");
   exps = exps.sort((a, c) => (a.created_at < c.created_at ? -1 : 1)).map((e) => exp(e.id));
   const scope = b.experiment_id ? exps[0].title : b.folder_id ? (get("folder", b.folder_id) || {}).name : project.name;
-  const deck = await ask(P.slidesInput(scope, exps), { check: P.checkSlides });
+  const prior = b.deck_id ? get("deck", b.deck_id) : null;
+  const deck = await ask(P.slidesInput(scope, exps, prior ? prior.deck : null), { check: P.checkSlides });
   const labels = new Map(exps.flatMap((e) => e.datasets).map((d) => [d.label || d.filename, d]));
   const figs = new Map(exps.flatMap((e) => e.figures || []).map((f) => [f.caption, f]));
   for (const s of deck.slides) {
@@ -905,6 +909,228 @@ route("POST", "/experiments/{id}/figures", async ({ id }, b) => {
 });
 route("PUT", "/figures/{id}", async ({ id }, b) => { const f = need("figure", id); await upd(f, { caption: String(b.caption || "").trim() || f.caption }); return exp(f.experiment_id); });
 route("DELETE", "/figures/{id}", async ({ id }) => { const f = need("figure", id); await dropFile(f.asset_id); await del(f); return exp(f.experiment_id); });
+
+// ---------- weighing a second opinion: what moved you, and why ----------
+
+route("POST", "/challenges/{id}/weigh", async ({ id }, b) => {
+  const ch = need("challenge", id, "second opinion");
+  if (!["moves", "not", "unsure"].includes(b.stance)) fail("Pick whether it moves you.");
+  const index = Number(b.index);
+  if (!(index >= 0 && index < ((ch.blind && ch.blind.explanations) || []).length)) fail("No such possibility.");
+  await ins("weigh", { challenge_id: ch.id, index, stance: b.stance, reason: String(b.reason || "").trim() });
+  const e = ch.experiment_id || get("commitment", ch.commitment_id).experiment_id;
+  return exp(e);
+});
+route("GET", "/projects/{pid}/judgment", ({ pid }) => judgment(recs, Number(pid)));
+
+// ---------- lab admin: one shape of route for each kind of record ----------
+
+const clean = (v) => (typeof v === "string" ? v.trim() : v);
+function crud(kind, plural, fields, check) {
+  const pick = (b) => Object.fromEntries(fields.filter((f) => f in b).map((f) => [f, clean(b[f])]));
+  const list = (pid) => all(kind).filter((r) => r.project_id === Number(pid)).sort((a, c) => (a.created_at < c.created_at ? -1 : 1));
+  route("GET", `/projects/{pid}/${plural}`, ({ pid }) => list(pid));
+  route("POST", `/projects/{pid}/${plural}`, async ({ pid }, b) => {
+    const f = pick(b);
+    if (check) check(f, null, Number(pid));
+    await ins(kind, { project_id: Number(pid), ...f });
+    return list(pid);
+  });
+  route("PUT", `/${plural}/{id}`, async ({ id }, b) => {
+    const r = need(kind, id);
+    const f = pick(b);
+    if (check) check({ ...r, ...f }, r, r.project_id);
+    await upd(r, f);
+    return list(r.project_id);
+  });
+  route("DELETE", `/${plural}/{id}`, async ({ id }) => { const r = need(kind, id); await del(r); return list(r.project_id); });
+}
+const needName = (key, msg) => (f) => { if (!String(f[key] || "").trim()) fail(msg); };
+crud("training", "trainings", ["name", "type", "room", "signed_by", "date", "expires", "status", "notes"], needName("name", "Name the training or induction."));
+crud("rota", "rotas", ["task", "who", "due", "done", "repeat"], needName("task", "Name the duty."));
+crud("approval", "approvals", ["what", "approver", "requested_on", "status", "notes"], needName("what", "Say what needs approving."));
+crud("contact", "contacts", ["role", "name", "email"], (f) => {
+  needName("role", "Give the role, like lab manager.")(f);
+  if (f.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.email)) fail("That email address does not look right.");
+});
+crud("checklist", "checklists", ["name", "items", "when"], (f) => {
+  needName("name", "Name the checklist.")(f);
+  if (f.items && !Array.isArray(f.items)) fail("Items must be a list.");
+});
+crud("check_log", "check_logs", ["checklist_id", "date", "done", "note"]);
+crud("plan", "plans", ["weekday", "start", "end", "type", "label"], (f) => {
+  if (!["maker", "manager"].includes(f.type)) fail("A block is maker or manager time.");
+  if (!(f.start < f.end)) fail("A block has to end after it starts.");
+});
+const mins = (t) => { const [h, m] = String(t).split(":").map(Number); return h * 60 + (m || 0); };
+crud("booking", "bookings", ["resource", "start", "end", "buffer_min", "purpose", "experiment_id"], (f, old, pid) => {
+  needName("resource", "Say what you are booking.")(f);
+  if (!f.start || !f.end || !(f.start < f.end)) fail("A booking needs a start and an end, in that order.");
+  const pad = (x) => Number(x.buffer_min || 0) * 60000;
+  const clash = all("booking").find((x) => x.project_id === pid && (!old || x.id !== old.id) && x.resource === f.resource
+    && Date.parse(x.start) < Date.parse(f.end) + pad(f) && Date.parse(f.start) < Date.parse(x.end) + pad(x));
+  if (clash) fail(`That overlaps ${clash.purpose || "another booking"} on ${clash.resource}, counting the cleaning or UV time after it.`);
+});
+crud("user_template", "templates_mine", ["name", "who", "context", "protocol", "glossary", "caution"], needName("name", "Name the template."));
+
+route("PUT", "/lines/{id}/min", async ({ id }, b) => { const l = need("cell_line", id, "cell line"); await upd(l, { min_vials: b.min_vials === "" || b.min_vials == null ? null : Number(b.min_vials) }); return lines(l.project_id); });
+
+// A draft to the lab manager when a line runs short; it is never sent from here.
+route("POST", "/lines/{id}/alert_draft", async ({ id }) => {
+  const l = lineBundle(need("cell_line", id, "cell line"));
+  const mgr = all("contact").find((c) => c.project_id === l.project_id && /lab manager/i.test(c.role) && c.email);
+  if (!mgr) fail("Add the lab manager's email under Lab, Contacts first.");
+  const m = window.claude ? await window.claude.use("mcp") : null;
+  if (!m) fail("Gmail is reached through your Claude account. Open Benchcraft inside Claude.");
+  const where = all("vial").filter((v) => v.cell_line_id === l.id && !v.removed_at).map((v) => {
+    const b = get("box", v.box_id), st = b && get("storage", b.storage_id);
+    return `${st ? st.name + ", " : ""}${b ? b.label : ""} ${String.fromCharCode(65 + v.row)}${v.col + 1}${v.passage ? ` (P${v.passage})` : ""}`;
+  });
+  const body = `Hi ${mgr.name || ""},\n\n${l.name} is down to ${l.vials_left} vial${l.vials_left === 1 ? "" : "s"}${l.min_vials ? `, below the ${l.min_vials} we keep` : ""}.\n\n${where.length ? "Where they are:\n" + where.map((w) => "  " + w).join("\n") + "\n\n" : ""}Thanks`;
+  try {
+    const r = await m.callTool("Gmail", "create_draft", { to: [mgr.email], subject: `${l.name}: ${l.vials_left} vial${l.vials_left === 1 ? "" : "s"} left`, body });
+    const d = r.payload ?? JSON.parse(r.content?.[0]?.text || "{}");
+    return { url: d.viewUrl || "", to: mgr.email };
+  } catch (e) {
+    if (e.code === "server_not_connected") fail("Connect Gmail in claude.ai Settings, Connectors, then try again.");
+    fail(`Gmail said no (${e.code || e.message}).`);
+  }
+});
+
+// ---------- today: what needs you, gathered from everything else ----------
+
+route("GET", "/projects/{pid}/today", ({ pid }) => {
+  pid = Number(pid);
+  const now = new Date(), day = now.toISOString().slice(0, 10), weekday = now.getDay();
+  const soon = new Date(now.getTime() + 7 * 86400000).toISOString().slice(0, 10);
+  const exps = all("experiment").filter((e) => e.project_id === pid).map((e) => exp(e.id));
+  const next = [], waiting = [];
+  for (const e of exps) {
+    const c = e.commitments[e.commitments.length - 1];
+    if (!c) continue;
+    const r = c.challenges.flatMap((ch) => ch.responses).pop();
+    const step = (r && r.chosen_next) || c.proposed_next;
+    if (step && !all("experiment").some((x) => x.parent_experiment_id === e.id)) next.push({ experiment_id: e.id, title: e.title, step, since: c.locked_at.slice(0, 10) });
+    if ((!c.resolution || c.resolution.verdict === "unresolved") && (Date.now() - Date.parse(c.locked_at)) > 3 * 86400000) {
+      waiting.push({ experiment_id: e.id, title: e.title, since: c.locked_at.slice(0, 10), confidence: c.confidence });
+    }
+  }
+  const todos = all("todo").filter((t) => !t.trashed_at && t.kind_of !== "divider");
+  const lineList = lines(pid);
+  return {
+    date: day,
+    blocks: all("plan").filter((b) => b.project_id === pid && Number(b.weekday) === weekday).sort((a, b) => mins(a.start) - mins(b.start)),
+    allPlans: all("plan").filter((b) => b.project_id === pid).sort((a, b) => Number(a.weekday) - Number(b.weekday) || mins(a.start) - mins(b.start)),
+    bookings: all("booking").filter((b) => b.project_id === pid && b.end.slice(0, 10) >= day && b.start.slice(0, 10) <= soon).sort((a, b) => (a.start < b.start ? -1 : 1)),
+    in_progress: todos.filter((t) => t.status === "progress").slice(0, 8),
+    due: todos.filter((t) => t.status !== "done" && t.due && t.due <= soon).sort((a, b) => (a.due < b.due ? -1 : 1)),
+    next, waiting,
+    low_reagents: listReagents(pid).filter((r) => r.status !== "ok"),
+    short_lines: lineList.filter((l) => l.min_vials != null && l.vials_left < l.min_vials),
+    trainings: all("training").filter((t) => t.project_id === pid && (t.status !== "done" || (t.expires && t.expires <= soon))),
+    rota: all("rota").filter((r) => r.project_id === pid && !r.done && r.due && r.due <= soon),
+    approvals: all("approval").filter((a) => a.project_id === pid && a.status !== "approved" && a.status !== "declined"),
+    checklists: all("checklist").filter((c) => c.project_id === pid).map((c) => ({ ...c, done_today: all("check_log").some((l) => l.checklist_id === c.id && l.date === day) })),
+    judgment: judgment(recs, pid),
+    calibration: calibration(recs, pid),
+  };
+});
+
+// ---------- sharing one entry, as a Google Doc in your Drive ----------
+
+function entryMarkdown(e) {
+  const out = [`# ${e.title}`, ""];
+  if (e.question) out.push(`**Question:** ${e.question}`, "");
+  const ctx = Object.entries(e.context || {});
+  if (ctx.length) out.push(ctx.map(([k, v]) => `- ${k}: ${v}`).join("\n"), "");
+  const steps = e.notes.filter((n) => n.source === "protocol");
+  if (steps.length) {
+    out.push("## Protocol", "");
+    for (const n of steps) { out.push(`- ${n.body}`); for (const a of n.annotations || []) out.push(`  - what I did: ${a.body}`); }
+    out.push("");
+  }
+  const notes = e.notes.filter((n) => n.source !== "protocol");
+  if (notes.length) out.push("## Notes", "", ...notes.map((n) => `- ${n.created_at.slice(0, 10)}: ${n.body}`), "");
+  if (e.reagents.length) out.push("## Reagents", "", ...e.reagents.map((u) => `- ${u.name}${u.lot ? `, lot ${u.lot}` : ""}${u.amount ? `, ${u.amount} ${u.unit || ""}` : ""}`), "");
+  if ((e.cell_events || []).length) out.push("## Cell lines", "", ...e.cell_events.map((c) => `- ${c.line_name} ${c.type}${c.passage ? ` P${c.passage}` : ""}, ${c.date || c.created_at.slice(0, 10)}`), "");
+  if (e.datasets.length) out.push("## Data", "", ...e.datasets.map((d) => `- ${d.label || d.filename}${d.drive_url ? ` (${d.drive_url})` : ""}`), "");
+  if ((e.figures || []).length) out.push("## Figures", "", ...e.figures.map((f) => `- ${f.caption}${f.url ? ` (${f.url})` : ""}`), "");
+  for (const c of e.commitments) {
+    out.push(`## My reading, ${c.locked_at.slice(0, 10)}`, "", c.interpretation, "");
+    if (c.observed) out.push(`**Observed:** ${c.observed}`, "");
+    if (c.confidence != null) out.push(`**Confidence:** ${c.confidence}/100`, "");
+    if (c.resolution && c.resolution.verdict !== "unresolved") out.push(`**How it turned out:** ${c.resolution.verdict}${c.resolution.notes ? `, ${c.resolution.notes}` : ""}`, "");
+  }
+  return out.join("\n");
+}
+route("POST", "/experiments/{id}/share", async ({ id }) => {
+  const e = exp(id) || fail("No such experiment");
+  const f = await drive("create_file", { title: `${e.title} (Benchcraft entry)`, textContent: entryMarkdown(e), contentMimeType: "text/markdown" });
+  await upd(get("experiment", e.id), { shared_doc: f.viewUrl || "", shared_at: now() });
+  return { url: f.viewUrl || "" };
+});
+
+// ---------- decks that update instead of starting over ----------
+
+const decks = (pid) => all("deck").filter((d) => d.project_id === Number(pid)).sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+route("GET", "/projects/{pid}/decks", ({ pid }) => decks(pid));
+route("POST", "/projects/{pid}/decks", async ({ pid }, b) => {
+  const old = b.id ? get("deck", b.id) : null;
+  const f = { title: b.deck.title, scope: b.scope || {}, deck: b.deck, source_hash: b.source_hash || "", updated_at: now() };
+  if (old) await upd(old, f); else await ins("deck", { project_id: Number(pid), drive_id: "", drive_url: "", ...f });
+  return decks(pid);
+});
+async function archiveFolder() {
+  const st = all("setting")[0] || {};
+  if (st.archive_folder) return st.archive_folder;
+  const f = await drive("create_file", { title: "Benchcraft, earlier versions", contentMimeType: "application/vnd.google-apps.folder" });
+  if (st.id) await upd(st, { archive_folder: f.id }); else await ins("setting", { ai: false, archive_folder: f.id });
+  return f.id;
+}
+route("POST", "/decks/{id}/to_drive", async ({ id }, b) => {
+  const d = need("deck", id, "deck");
+  const f = await drive("create_file", { title: d.title, base64Content: b.base64, contentMimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation" });
+  if (d.drive_id) {
+    try { await drive("update_file", { fileId: d.drive_id, parentId: await archiveFolder(), title: `${d.title} (${(d.drive_saved_at || d.updated_at).slice(0, 10)})` }); } catch { /* the old copy stays where it was */ }
+  }
+  await upd(get("deck", d.id), { drive_id: f.id, drive_url: f.viewUrl || "", drive_saved_at: now() });
+  return { id: f.id, url: f.viewUrl || "" };
+});
+
+// ---------- Google Calendar, connected by each person on their own Claude account ----------
+
+const CAL = "Google Calendar";
+const localIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T00:00:00`;
+async function cal(tool, args) {
+  const m = window.claude ? await window.claude.use("mcp") : null;
+  if (!m) fail("not_connected");
+  try {
+    const r = await m.callTool(CAL, tool, args);
+    return r.payload ?? JSON.parse(r.content?.[0]?.text || "null");
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    if (e.code === "server_not_connected") fail("not_connected");
+    if (e.code === "not_granted") fail("not_granted");
+    fail(`Google Calendar said no (${e.code || e.message}).`);
+  }
+}
+route("GET", "/calendar/day", async (_, __, q) => {
+  const d = q.get("date") ? new Date(q.get("date") + "T12:00:00") : new Date();
+  const next = new Date(d.getTime() + 86400000);
+  const out = await cal("list_events", { startTime: localIso(d), endTime: localIso(next), orderBy: "startTime", pageSize: 50 });
+  return ((out && out.events) || []).filter((e) => e.status !== "cancelled").map((e) => ({
+    title: e.summary || "busy", start: e.start?.dateTime || e.start?.date, end: e.end?.dateTime || e.end?.date,
+    allDay: !e.start?.dateTime, link: e.htmlLink || "", type: e.eventType || "DEFAULT",
+  }));
+});
+route("POST", "/calendar/protect", async (_, b) => {
+  if (!b.date || !b.start || !b.end) fail("Pick the day and the times.");
+  const e = await cal("create_event", {
+    summary: b.label || "Bench time", startTime: `${b.date}T${b.start}:00`, endTime: `${b.date}T${b.end}:00`,
+    availability: "AVAILABILITY_BUSY", description: "Maker time, protected from Benchcraft.",
+  });
+  return { link: (e && e.htmlLink) || "" };
+});
 
 async function R_get(path) { return api(path); }
 
@@ -1033,4 +1259,11 @@ export async function importOldNotebook(dump) {
     set(kind + "s", r.id, n.id);
   }
   return { experiments: rows("experiments").length, folders: rows("folders").length, papers_without_files: rows("uploaded_papers").length + rows("datasets").length };
+}
+
+// Test hook: a second opinion stored as if the model had answered.
+export async function __insertChallengeForTest(experimentId, blind) {
+  await init();
+  const c = await insChained("challenge", { experiment_id: Number(experimentId), commitment_id: null, model: "test", blind, divergence: null, created_at: now() });
+  return c.id;
 }

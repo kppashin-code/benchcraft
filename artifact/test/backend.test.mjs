@@ -160,3 +160,58 @@ test("vials go into boxes, thaw against an entry, and show up in the line's hist
   assert.equal(line.children[0].name, "SFC840 TH-reporter");
   assert.equal((await B.api(`/experiments/${e.id}`)).cell_events[0].line_name, "SFC840-03-03");
 });
+
+test("weighing a second opinion counts reasons, not agreement", async () => {
+  const { seal, ledgerOf } = await import("../lib/chain.js");
+  const p = await B.api("/projects", "POST", { name: "weigh", description: "" });
+  const e = await B.api(`/projects/${p.id}/experiments`, "POST", { title: "Edge wells", mode: "notebook" });
+  await B.api(`/experiments/${e.id}/notes`, "POST", { body: "outer ring low" });
+  // A second opinion written straight in, since the model is not reachable in tests.
+  const ex = { label: "l", statement: "s", kind: "technical", supports: [], contradicts: [], would_rule_out: "x" };
+  const ch = await B.__insertChallengeForTest(e.id, { explanations: [ex, ex, ex], confounders: [], missing_controls: [], discriminating_experiment: { description: "d", cost: "hours", reads_out: "r" } });
+  await B.api(`/challenges/${ch}/weigh`, "POST", { index: 0, stance: "moves", reason: "the drier outer ring fits evaporation" });
+  await B.api(`/challenges/${ch}/weigh`, "POST", { index: 1, stance: "not", reason: "" });
+  await B.api(`/challenges/${ch}/weigh`, "POST", { index: 1, stance: "not", reason: "the centre wells were fine on the same plate" });
+  const j = await B.api(`/projects/${p.id}/judgment`);
+  assert.equal(j.weighed, 2);
+  assert.equal(j.moved_reasoned, 1);
+  assert.equal(j.not_reasoned, 1);
+  assert.equal(j.left_unweighed, 1);
+  await assert.rejects(B.api(`/challenges/${ch}/weigh`, "POST", { index: 9, stance: "moves" }), /No such possibility/);
+});
+
+test("bookings refuse an overlap, counting the UV time after the first one", async () => {
+  const p = await B.api("/projects", "POST", { name: "book", description: "" });
+  await B.api(`/projects/${p.id}/bookings`, "POST", { resource: "Hood 2", start: "2026-10-28T09:00", end: "2026-10-28T10:00", buffer_min: 30, purpose: "thaw" });
+  await assert.rejects(B.api(`/projects/${p.id}/bookings`, "POST", { resource: "Hood 2", start: "2026-10-28T10:15", end: "2026-10-28T11:00" }), /overlaps/);
+  const ok = await B.api(`/projects/${p.id}/bookings`, "POST", { resource: "Hood 2", start: "2026-10-28T10:30", end: "2026-10-28T11:00" });
+  assert.equal(ok.length, 2);
+  await B.api(`/projects/${p.id}/bookings`, "POST", { resource: "Hood 1", start: "2026-10-28T10:15", end: "2026-10-28T11:00" });
+});
+
+test("today gathers next steps, open readings, short lines and admin", async () => {
+  const p = await B.api("/projects", "POST", { name: "today", description: "" });
+  const e = await B.api(`/projects/${p.id}/experiments`, "POST", { title: "Run 5", mode: "notebook" });
+  await B.api(`/experiments/${e.id}/commitments`, "POST", { observed: "gap", interpretation: "stiffness", proposed_next: "repeat with lot C", confidence: 60 });
+  const ls = await B.api(`/projects/${p.id}/lines`, "POST", { name: "iPSC A" });
+  await B.api(`/lines/${ls[0].id}/min`, "PUT", { min_vials: 10 });
+  await B.api(`/projects/${p.id}/trainings`, "POST", { name: "Cell lab induction", status: "to do" });
+  await B.api(`/projects/${p.id}/plans`, "POST", { weekday: new Date().getDay(), start: "09:00", end: "13:00", type: "maker" });
+  await assert.rejects(B.api(`/projects/${p.id}/plans`, "POST", { weekday: 1, start: "14:00", end: "13:00", type: "maker" }), /end after/);
+  const t = await B.api(`/projects/${p.id}/today`);
+  assert.equal(t.next[0].step, "repeat with lot C");
+  assert.equal(t.short_lines[0].name, "iPSC A");
+  assert.equal(t.trainings[0].name, "Cell lab induction");
+  assert.equal(t.blocks.length, 1);
+  await assert.rejects(B.api(`/lines/${ls[0].id}/alert_draft`, "POST"), /lab manager's email/);
+});
+
+test("my own templates sit beside the built-in ones and start an entry", async () => {
+  const p = await B.api("/projects", "POST", { name: "tpl", description: "" });
+  await B.api(`/projects/${p.id}/templates_mine`, "POST", { name: "Matrigel coating", protocol: ["coat 1 mL per well", "30 min at 37"], caution: "pointer only" });
+  const all = await B.api("/templates");
+  const mine = all.find((t) => t.mine);
+  assert.equal(mine.name, "Matrigel coating");
+  const e = await B.api(`/projects/${p.id}/experiments`, "POST", { title: "Coat plates", template: mine.id });
+  assert.equal(e.notes.filter((n) => n.source === "protocol").length, 2);
+});

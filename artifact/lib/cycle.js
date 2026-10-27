@@ -16,6 +16,7 @@ export function bundle(recs, expId) {
     challenges: of("challenge", "commitment_id", c.id).sort(byTime("created_at")).map((ch) => ({
       ...strip(ch),
       responses: of("response", "challenge_id", ch.id).sort(byTime("created_at")).map(strip),
+      weighs: of("weigh", "challenge_id", ch.id).sort(byTime("created_at")).map(strip),
     })),
     resolution: (() => { const rs = of("resolution", "commitment_id", c.id).sort(byTime("created_at")); return rs.length ? strip(rs[rs.length - 1]) : null; })(),
   }));
@@ -41,7 +42,8 @@ export function bundle(recs, expId) {
     cell_events: of("line_event", "experiment_id", expId).sort(byTime("created_at")).map((ev) => ({
       ...strip(ev), line_name: (recs.find((r) => r._t === "cell_line" && r.id === ev.cell_line_id) || {}).name || "",
     })),
-    early_challenges: of("challenge", "experiment_id", expId).filter((ch) => !ch.commitment_id).sort(byTime("created_at")).map(strip),
+    early_challenges: of("challenge", "experiment_id", expId).filter((ch) => !ch.commitment_id).sort(byTime("created_at"))
+      .map((ch) => ({ ...strip(ch), weighs: of("weigh", "challenge_id", ch.id).sort(byTime("created_at")).map(strip) })),
   };
 }
 
@@ -133,5 +135,28 @@ export function graph(recs, projectId) {
     edges: nodes.filter((n) => n.parent).map((n) => ({ from: n.parent, to: n.id })),
     awaiting_verdict: nodes.filter((n) => n.commitment_id && (!n.resolution || n.resolution.verdict === "unresolved"))
       .map((n) => ({ commitment_id: n.commitment_id, title: n.title, confidence: n.confidence })),
+  };
+}
+
+// How the researcher has weighed second opinions: reasoned or not, moved or not.
+export function judgment(recs, projectId) {
+  const exps = new Set(byKind(recs, "experiment").filter((e) => e.project_id === projectId).map((e) => e.id));
+  const commits = new Set(byKind(recs, "commitment").filter((c) => exps.has(c.experiment_id)).map((c) => c.id));
+  const chs = byKind(recs, "challenge").filter((ch) => exps.has(ch.experiment_id) || commits.has(ch.commitment_id));
+  const chIds = new Set(chs.map((c) => c.id));
+  const latest = new Map();
+  for (const w of byKind(recs, "weigh").filter((w) => chIds.has(w.challenge_id)).sort(byTime("created_at"))) latest.set(`${w.challenge_id}:${w.index}`, w);
+  const ws = [...latest.values()];
+  const reasoned = (w) => (w.reason || "").trim().split(/\s+/).filter(Boolean).length >= 4;
+  const count = (f) => ws.filter(f).length;
+  const offered = chs.reduce((n, ch) => n + ((ch.blind && ch.blind.explanations) || []).length, 0);
+  return {
+    opinions: chs.length, possibilities: offered, weighed: ws.length,
+    moved_reasoned: count((w) => w.stance === "moves" && reasoned(w)),
+    moved_unreasoned: count((w) => w.stance === "moves" && !reasoned(w)),
+    not_reasoned: count((w) => w.stance === "not" && reasoned(w)),
+    not_unreasoned: count((w) => w.stance === "not" && !reasoned(w)),
+    unsure: count((w) => w.stance === "unsure"),
+    left_unweighed: Math.max(0, offered - ws.length),
   };
 }
