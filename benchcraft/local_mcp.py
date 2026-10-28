@@ -7,6 +7,9 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 import base64
+import datetime as dt
+import urllib.request
+from pathlib import Path
 import json
 import re
 import shutil
@@ -128,6 +131,74 @@ def github_figure(repo: str, path: str) -> dict:
     ext = "." + path.rsplit(".", 1)[-1].lower()
     return {"repo": full, "path": path, "sha": meta["sha"], "mime": IMAGES.get(ext, "application/octet-stream"),
             "url": meta.get("html_url", ""), "base64": data.replace("\n", "")}
+
+
+# Calendar links (Outlook "publish calendar", or any .ics address) are kept on this Mac only.
+FEEDS = Path.home() / ".benchcraft" / "calendars.json"
+
+
+def _feeds() -> list[dict]:
+    try:
+        return json.loads(FEEDS.read_text())["feeds"]
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        return []
+
+
+def _save_feeds(feeds: list[dict]) -> None:
+    FEEDS.parent.mkdir(parents=True, exist_ok=True)
+    FEEDS.write_text(json.dumps({"feeds": feeds}, indent=2))
+    FEEDS.chmod(0o600)
+
+
+@server.tool(annotations=READ, description="The calendar links kept on this Mac, by name only.")
+def calendar_feeds() -> dict:
+    return {"feeds": [{"name": f["name"]} for f in _feeds()]}
+
+
+@server.tool(description="Keep a calendar link (.ics address) on this Mac under a name.")
+def calendar_feed_add(name: str, url: str) -> dict:
+    url = url.strip().replace("webcal://", "https://", 1)
+    if not url.startswith("https://"):
+        raise ValueError("Use the https or webcal link the calendar gives you.")
+    feeds = [f for f in _feeds() if f["name"] != name.strip()] + [{"name": name.strip() or "Calendar", "url": url}]
+    _save_feeds(feeds)
+    return calendar_feeds()
+
+
+@server.tool(description="Forget a calendar link kept on this Mac.")
+def calendar_feed_remove(name: str) -> dict:
+    _save_feeds([f for f in _feeds() if f["name"] != name])
+    return calendar_feeds()
+
+
+@server.tool(annotations=OPEN, description="Events on one day (YYYY-MM-DD, local time) from every calendar link kept on this Mac, repeating events included.")
+def calendar_feed_events(date: str) -> dict:
+    import icalendar
+    import recurring_ical_events
+
+    day = dt.date.fromisoformat(date)
+    start = dt.datetime.combine(day, dt.time.min).astimezone()
+    end = start + dt.timedelta(days=1)
+    events, errors = [], []
+    for f in _feeds():
+        try:
+            req = urllib.request.Request(f["url"], headers={"User-Agent": "Benchcraft/0.1"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                cal = icalendar.Calendar.from_ical(r.read())
+            for ev in recurring_ical_events.of(cal).between(start, end):
+                s, e = ev.get("DTSTART").dt, (ev.get("DTEND") or ev.get("DTSTART")).dt
+                all_day = not isinstance(s, dt.datetime)
+                if not all_day:
+                    s, e = s.astimezone(), e.astimezone()
+                status = str(ev.get("STATUS") or "").upper()
+                if status == "CANCELLED":
+                    continue
+                events.append({"calendar": f["name"], "title": str(ev.get("SUMMARY") or "busy"), "allDay": all_day,
+                               "start": s.isoformat(), "end": e.isoformat()})
+        except Exception as err:
+            errors.append({"calendar": f["name"], "error": str(err)[:200]})
+    events.sort(key=lambda x: x["start"])
+    return {"events": events, "errors": errors}
 
 
 if __name__ == "__main__":

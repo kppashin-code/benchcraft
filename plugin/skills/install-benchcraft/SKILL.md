@@ -21,9 +21,9 @@ Use `icon: "notebook"` and these capabilities:
 ```json
 {"sample": {}, "db": {}, "user": {}, "assets": {}, "downloads": true,
  "mcp": {"servers": [
-   {"server": "host:benchcraft-local", "tools": ["zotero_status", "zotero_collections", "zotero_items", "zotero_item", "zotero_text", "literature_search", "github_repos", "github_figures", "github_figure"]},
+   {"server": "host:benchcraft-local", "tools": ["zotero_status", "zotero_collections", "zotero_items", "zotero_item", "zotero_text", "literature_search", "github_repos", "github_figures", "github_figure", "calendar_feeds", "calendar_feed_add", "calendar_feed_remove", "calendar_feed_events"]},
    {"server": "Google Drive", "tools": ["search_files", "download_file_content", "create_file", "update_file"]},
-   {"server": "Google Calendar", "tools": ["list_events", "create_event"]},
+   {"server": "Google Calendar", "tools": ["list_calendars", "list_events", "create_event"]},
    {"server": "Gmail", "tools": ["create_draft"]}]}}
 ```
 

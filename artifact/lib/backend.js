@@ -1132,15 +1132,51 @@ async function cal(tool, args) {
     fail(`Google Calendar said no (${e.code || e.message}).`);
   }
 }
+// Every source a viewer has: their Google calendars and any calendar links kept by the helper on their Mac.
 route("GET", "/calendar/day", async (_, __, q) => {
   const d = q.get("date") ? new Date(q.get("date") + "T12:00:00") : new Date();
   const next = new Date(d.getTime() + 86400000);
-  const out = await cal("list_events", { startTime: localIso(d), endTime: localIso(next), orderBy: "startTime", pageSize: 50 });
-  return ((out && out.events) || []).filter((e) => e.status !== "cancelled").map((e) => ({
-    title: e.summary || "busy", start: e.start?.dateTime || e.start?.date, end: e.end?.dateTime || e.end?.date,
-    allDay: !e.start?.dateTime, link: e.htmlLink || "", type: e.eventType || "DEFAULT",
-  }));
+  const hidden = new Set(((all("setting")[0] || {}).hidden_calendars) || []);
+  const events = [], sources = [];
+  try {
+    const cals = (((await cal("list_calendars", { pageSize: 50 })) || {}).calendars || []).slice(0, 15);
+    const ids = cals.length ? cals : [{ id: "primary", summary: "Google Calendar" }];
+    for (const c of ids) {
+      const on = !hidden.has(c.id);
+      sources.push({ kind: "google", id: c.id, name: c.summary || c.id, on });
+      if (!on) continue;
+      try {
+        const out = await cal("list_events", { calendarId: c.id, startTime: localIso(d), endTime: localIso(next), orderBy: "startTime", pageSize: 50 });
+        for (const e of (out && out.events) || []) if (e.status !== "cancelled") events.push({
+          calendar: c.summary || "Google", title: e.summary || "busy", start: e.start?.dateTime || e.start?.date, end: e.end?.dateTime || e.end?.date,
+          allDay: !e.start?.dateTime, link: e.htmlLink || "",
+        });
+      } catch { /* one calendar failing does not hide the others */ }
+    }
+  } catch (e) { sources.push({ kind: "google", error: e.message }); }
+  try {
+    const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const out = await zot("calendar_feed_events", { date: ymd });
+    for (const e of out.events || []) events.push({ ...e, link: "" });
+    const names = (await zot("calendar_feeds")).feeds || [];
+    for (const f of names) sources.push({ kind: "link", name: f.name, on: true, error: ((out.errors || []).find((x) => x.calendar === f.name) || {}).error || "" });
+  } catch (e) { sources.push({ kind: "link", error: e.message }); }
+  if (!events.length && sources.every((x) => x.error)) fail(sources.some((x) => /not_connected/.test(x.error || "")) ? "not_connected" : (sources[0] || {}).error || "not_connected");
+  events.sort((a, b) => (a.start < b.start ? -1 : 1));
+  return { events, sources };
 });
+route("PUT", "/calendar/hidden", async (_, b) => {
+  const st = all("setting")[0];
+  const hidden = Array.isArray(b.hidden) ? b.hidden.map(String) : [];
+  if (st) await upd(st, { hidden_calendars: hidden }); else await ins("setting", { ai: false, hidden_calendars: hidden });
+  return { hidden };
+});
+route("GET", "/calendar/links", async () => (await zot("calendar_feeds")).feeds || []);
+route("POST", "/calendar/links", async (_, b) => {
+  if (!String(b.name || "").trim() || !/^(https|webcal):\/\//.test(String(b.url || "").trim())) fail("Give the calendar a name and paste its https or webcal link.");
+  return (await zot("calendar_feed_add", { name: String(b.name).trim(), url: String(b.url).trim() })).feeds || [];
+});
+route("DELETE", "/calendar/links", async (_, b) => (await zot("calendar_feed_remove", { name: String(b.name || "") })).feeds || []);
 route("POST", "/calendar/protect", async (_, b) => {
   if (!b.date || !b.start || !b.end) fail("Pick the day and the times.");
   const e = await cal("create_event", {

@@ -7,7 +7,7 @@ const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", 
 const hm = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 const mins = (t) => { const [h, m] = String(t).split(":").map(Number); return h * 60 + (m || 0); };
 
-let ROOT = null, PID = null, OPEN_EXP = null, OPEN_TOOL = null, T = null, EVENTS = [], CALEV = null, CALSTATE = "";
+let ROOT = null, PID = null, OPEN_EXP = null, OPEN_TOOL = null, T = null, EVENTS = [], CALEV = null, CALSTATE = "", SOURCES = [];
 try { EVENTS = JSON.parse(localStorage.getItem("bc.icsEvents") || "[]"); } catch { EVENTS = []; }
 
 export async function showToday(root, projectId, onOpenExperiment, onOpenTool) {
@@ -15,8 +15,8 @@ export async function showToday(root, projectId, onOpenExperiment, onOpenTool) {
   T = await B.api(`/projects/${PID}/today`);
   draw();
   // Each viewer's own Google Calendar, if they have connected it in claude.ai.
-  try { CALEV = await B.api("/calendar/day"); CALSTATE = "on"; }
-  catch (e) { CALEV = null; CALSTATE = /not_connected/.test(e.message) ? "off" : /not_granted/.test(e.message) ? "denied" : e.message; }
+  try { const out = await B.api("/calendar/day"); CALEV = out.events; SOURCES = out.sources; CALSTATE = "on"; }
+  catch (e) { CALEV = null; SOURCES = []; CALSTATE = /not_connected/.test(e.message) ? "off" : /not_granted/.test(e.message) ? "denied" : e.message; }
   draw();
 }
 
@@ -58,7 +58,7 @@ function dayStrip() {
   const items = [
     ...blocks.map((b) => ({ start: mins(b.start), end: mins(b.end), kind: b.type, label: b.label || (b.type === "maker" ? "Bench and deep work" : "Meetings and admin"), id: b.id, s: b.start, e: b.end })),
     ...todayBookings.map((b) => { const s = new Date(b.start), e = new Date(b.end); return { start: s.getHours() * 60 + s.getMinutes(), end: e.getHours() * 60 + e.getMinutes() + Number(b.buffer_min || 0), kind: "booking", label: `${b.resource}${b.purpose ? `, ${b.purpose}` : ""}`, buffer: Number(b.buffer_min || 0) }; }),
-    ...evs.map((e) => { const s = new Date(e.start), en = new Date(e.end || e.start); return { start: s.getHours() * 60 + s.getMinutes(), end: en.getHours() * 60 + en.getMinutes(), kind: "event", label: e.title || "busy" }; }),
+    ...evs.map((e) => { const s = new Date(e.start), en = new Date(e.end || e.start); return { start: s.getHours() * 60 + s.getMinutes(), end: en.getHours() * 60 + en.getMinutes(), kind: "event", label: `${e.title || "busy"}${e.calendar ? ` (${e.calendar})` : ""}` }; }),
   ];
   const lo = Math.min(8 * 60, ...items.map((i) => i.start)), hi = Math.max(19 * 60, ...items.map((i) => i.end));
   const pct = (m) => ((m - lo) / (hi - lo)) * 100;
@@ -79,9 +79,12 @@ function dayStrip() {
     </div>` : ""}
     ${clashes.length ? `<p class="small" style="color:var(--amber);margin:8px 0 0">${clashes.length} meeting${clashes.length > 1 ? "s" : ""} cut${clashes.length > 1 ? "" : "s"} into maker time today: ${clashes.map((c) => esc(c.label)).join(", ")}.</p>` : ""}
     ${!blocks.length ? `<p class="small muted" style="margin:8px 0 0">No maker or manager blocks for ${DAYS[new Date().getDay()]} yet. Set your week below, so bench time is protected before the meetings land.</p>` : ""}
-    <details class="plan-edit"><summary class="small">Set my week</summary>${planEditor()}</details>
+    <div class="row" style="gap:18px;flex-wrap:wrap;margin-top:12px">
+      <details class="plan-edit"><summary class="small">Set my week</summary>${planEditor()}</details>
+      <details class="plan-edit cal-edit"><summary class="small">My calendars</summary>${calendarsEditor()}</details>
+    </div>
     <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:10px">
-      ${CALSTATE === "on" ? `<span class="tiny muted">Showing your Google Calendar.</span>
+      ${CALSTATE === "on" ? `<span class="tiny muted">Showing ${SOURCES.filter((x) => x.on && x.name).map((x) => esc(x.name)).join(", ") || "your calendars"}.</span>
         ${blocks.filter((b) => b.type === "maker").map((b) => `<button class="ghost sm" data-protect="${b.id}">Hold ${esc(b.start)}–${esc(b.end)} on my calendar</button>`).join("")}
         <span class="tiny muted" id="protect-msg"></span>`
       : `<label class="ghost sm ics-btn">Add my calendar from a .ics file<input type="file" id="ics" accept=".ics,text/calendar" hidden></label>
@@ -89,6 +92,27 @@ function dayStrip() {
       ${EVENTS.length ? `<button class="link" id="ics-clear">clear</button>` : ""}`}
     </div>
   </section>`;
+}
+
+// Google calendars to show, and calendar links (Outlook included) kept by the helper on this Mac.
+function calendarsEditor() {
+  const g = SOURCES.filter((x) => x.kind === "google" && x.id);
+  const links = SOURCES.filter((x) => x.kind === "link" && x.name);
+  const linkErr = SOURCES.find((x) => x.kind === "link" && !x.name && x.error);
+  return `<div class="cal-list">
+    ${g.length ? `<div class="sub-h">Google</div>${g.map((c) => `<label class="row" style="margin:3px 0;font-weight:400"><input type="checkbox" data-gcal="${esc(c.id)}" ${c.on ? "checked" : ""} style="width:auto"> ${esc(c.name)}</label>`).join("")}`
+      : `<p class="tiny muted">Google Calendar connects under claude.ai Settings, Connectors.</p>`}
+    <div class="sub-h">Calendar links</div>
+    ${links.map((l) => `<div class="row small" style="margin:3px 0">${esc(l.name)}${l.error ? ` <span class="tiny" style="color:var(--amber)">could not be read: ${esc(l.error)}</span>` : ""}<button class="link" data-rmlink="${esc(l.name)}">remove</button></div>`).join("")}
+    ${linkErr ? `<p class="tiny muted">Calendar links are read by the Benchcraft helper on your Mac, which answers when Benchcraft is open in the Claude desktop app.</p>` : `
+      <div class="row" style="flex-wrap:wrap;margin-top:6px">
+        <input id="cl-name" placeholder="name, e.g. Oxford" style="width:150px">
+        <input id="cl-url" placeholder="https://… or webcal://… .ics link" style="flex:1;min-width:200px">
+        <button class="ghost sm" id="cl-add">Add</button>
+      </div>
+      <p class="tiny muted" style="margin-top:6px">For a university Outlook that will not connect directly: in Outlook on the web, Settings, Calendar, Shared calendars, Publish a calendar, then copy the ICS link. The link stays on your Mac.</p>`}
+    <div class="err tiny" id="cl-err"></div>
+  </div>`;
 }
 
 function planEditor() {
@@ -209,6 +233,21 @@ function wire() {
       b.outerHTML = out.url ? `<a href="${esc(out.url)}" target="_blank" rel="noopener">draft ready in Gmail, check and send it</a>` : `<span class="tiny">draft saved in Gmail for ${esc(out.to)}</span>`;
     } catch (e) { b.textContent = "draft a note to the lab manager"; $("#alert-err").textContent = e.message; }
   });
+  const reloadCal = async () => {
+    try { const o = await B.api("/calendar/day"); CALEV = o.events; SOURCES = o.sources; CALSTATE = "on"; } catch (e) { /* keep what was shown */ }
+    draw(); const det = ROOT.querySelector(".cal-edit"); if (det) det.open = true;
+  };
+  ROOT.querySelectorAll("[data-gcal]").forEach((cb) => cb.onchange = async () => {
+    const hidden = [...ROOT.querySelectorAll("[data-gcal]")].filter((x) => !x.checked).map((x) => x.dataset.gcal);
+    await B.api("/calendar/hidden", "PUT", { hidden }); reloadCal();
+  });
+  const cl = $("#cl-add");
+  if (cl) cl.onclick = async () => {
+    try { await B.api("/calendar/links", "POST", { name: $("#cl-name").value, url: $("#cl-url").value }); reloadCal(); }
+    catch (e) { $("#cl-err").textContent = e.message; }
+  };
+  ROOT.querySelectorAll("[data-rmlink]").forEach((b) => b.onclick = async () => { await B.api("/calendar/links", "DELETE", { name: b.dataset.rmlink }); reloadCal(); });
+
   const pp = $("#pp-save");
   if (pp) pp.onclick = async () => {
     try { await B.api(`/projects/${PID}/purpose`, "POST", { text: $("#pp-text").value, why_changed: $("#pp-why") ? $("#pp-why").value : "" }); T = await B.api(`/projects/${PID}/today`); draw(); }
@@ -221,7 +260,7 @@ function wire() {
     try {
       const out = await B.api("/calendar/protect", "POST", { date, start: blk.start, end: blk.end, label: blk.label || "Bench time" });
       $("#protect-msg").innerHTML = out.link ? `<a href="${esc(out.link)}" target="_blank" rel="noopener">on your calendar</a>` : "on your calendar";
-      CALEV = await B.api("/calendar/day"); draw();
+      const again = await B.api("/calendar/day"); CALEV = again.events; SOURCES = again.sources; draw();
     } catch (e) { b.disabled = false; $("#protect-msg").textContent = e.message; }
   });
   const ics = $("#ics");
