@@ -23,7 +23,7 @@ export function bundle(recs, expId) {
   return {
     ...strip(exp),
     context: exp.context || {},
-    notes: of("note", "experiment_id", expId).sort(byTime("created_at")).map((n) => ({
+    notes: of("note", "experiment_id", expId).filter((n) => !n.removed_at).sort(byTime("created_at")).map((n) => ({
       ...strip(n), annotations: of("step_note", "note_id", n.id).sort(byTime("created_at")).map(strip),
     })),
     recordings: of("recording", "experiment_id", expId).sort(byTime("created_at")).map(strip),

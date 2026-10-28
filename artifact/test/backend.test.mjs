@@ -247,3 +247,23 @@ test("the example project loads once and keeps its chain sound", async () => {
   await assert.rejects(B.importOldNotebook(dump, { example: true }), /already here/);
   assert.equal(await B.chainCheck(), null);
 });
+
+test("history keeps removed notes, search finds them only while live, the week compiles", async () => {
+  const p = await B.api("/projects", "POST", { name: "audit", description: "" });
+  const e = await B.api(`/projects/${p.id}/experiments`, "POST", { title: "Run 7 humidity tray" });
+  let x = await B.api(`/experiments/${e.id}/notes`, "POST", { body: "tray filled with sterile water" });
+  x = await B.api(`/experiments/${e.id}/notes`, "POST", { body: "a note I regret" });
+  x = await B.api(`/notes/${x.notes[1].id}`, "DELETE");
+  assert.equal(x.notes.length, 1);
+  const h = await B.api(`/experiments/${e.id}/history`);
+  assert.ok(h.some((r) => r.what === "note removed" && r.detail === "a note I regret"));
+  assert.ok(h.some((r) => r.what === "entry started"));
+  assert.equal((await B.api(`/projects/${p.id}/search?q=regret`)).length, 0);
+  const found = await B.api(`/projects/${p.id}/search?q=sterile water`);
+  assert.equal(found[0].experiment_id, e.id);
+  await B.api(`/experiments/${e.id}/commitments`, "POST", { observed: "flat", interpretation: "the tray fixed the edge", proposed_next: "keep the tray" });
+  const w = await B.api(`/projects/${p.id}/week`);
+  assert.equal(w.entries[0].title, "Run 7 humidity tray");
+  assert.equal(w.readings.length, 1);
+  assert.ok(w.next.some((n) => n.step === "keep the tray"));
+});

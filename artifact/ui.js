@@ -306,7 +306,7 @@ function render() {
     <div class="card">
       <div class="row" style="justify-content:space-between;align-items:flex-start;gap:12px">
         <h2>${esc(EXP.title)}</h2>
-        <div style="text-align:right;flex:none"><button class="ghost sm" id="btn-share">Share to Drive</button>
+        <div style="text-align:right;flex:none"><button class="ghost sm" id="btn-history">History</button> <button class="ghost sm" id="btn-share">Share to Drive</button>
           <div class="tiny muted" id="share-msg">${EXP.shared_doc ? `<a href="${esc(EXP.shared_doc)}" target="_blank" rel="noopener">last shared ${esc((EXP.shared_at || "").slice(0, 10))}</a>` : ""}</div></div>
       </div>
       ${EXP.question ? `<div class="qline"><b>Q:</b> ${esc(EXP.question)}</div>` : ""}
@@ -1793,6 +1793,9 @@ function wire(c, ch) {
     weigh(chId, i, on ? on.dataset.stance : "unsure");
   });
 
+  const hist = $("#btn-history");
+  if (hist) hist.onclick = openHistory;
+
   const share = $("#btn-share");
   if (share) share.onclick = async () => {
     share.disabled = true; share.textContent = "Sharing…";
@@ -2392,6 +2395,86 @@ document.querySelectorAll("#panebar .tab").forEach(t =>
 NARROW.addEventListener("change", () => showPane(NARROW.matches ? "center" : "left"));
 if (NARROW.matches) showPane("center");
 
+// Everything that happened to this entry, oldest first, including what was removed.
+async function openHistory() {
+  modal.classList.remove("wide");
+  const rows = await api(`/experiments/${EXP.id}/history`);
+  $("#modal-body").innerHTML = `<h2>History</h2><p class="small muted">${esc(EXP.title)}. Every note, reading, opinion and file, with what was removed and when. Nothing here can be edited.</p>
+    <div class="hist">${rows.map(r => `<div class="hrow ${r.kind}"><span class="hdate">${esc(r.at.slice(0, 16).replace("T", " "))}</span>
+      <span class="hwhat">${esc(r.what)}</span>${r.detail ? `<span class="hdetail">${esc(r.detail.slice(0, 220))}</span>` : ""}</div>`).join("")}</div>`;
+  modal.showModal();
+}
+
+// Search the whole notebook; entries open in place, other things open their tool.
+function openSearch() {
+  modal.classList.remove("wide");
+  $("#modal-body").innerHTML = `<h2>Search</h2>
+    <input id="sr-q" placeholder="a line, a lot number, a phrase from a note" autocomplete="off">
+    <div id="sr-out" class="sr-out"></div>`;
+  modal.showModal();
+  const q = $("#sr-q");
+  let t = null;
+  q.oninput = () => { clearTimeout(t); t = setTimeout(run, 150); };
+  q.focus();
+  async function run() {
+    const res = await api(`/projects/${PROJECT.id}/search?q=${encodeURIComponent(q.value)}`);
+    $("#sr-out").innerHTML = q.value.trim().length < 2 ? "" : res.length ? res.map((r, i) => `<button class="sr" data-i="${i}">
+      <span class="pill">${esc(r.kind)}</span><span class="sr-t">${esc(r.title)}</span><span class="sr-s">${esc(r.snippet)}</span></button>`).join("")
+      : `<p class="small muted">Nothing matches.</p>`;
+    $("#sr-out").querySelectorAll("[data-i]").forEach(b => b.onclick = async () => {
+      const r = res[+b.dataset.i];
+      modal.close();
+      if (r.experiment_id) { await setPage("notebook"); await openExperiment(r.experiment_id); return; }
+      if (r.tool === "bench") return openBench();
+      if (r.tool === "freezer") return $("#btn-freezer").click();
+      if (r.tool === "todo") return setPage("todo");
+      if (r.tool === "glossary") { TAB = "ref"; renderRail(); }
+    });
+  }
+}
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); if (!modal.open) openSearch(); }
+});
+
+// The week, compiled straight from the record, for supervision or your own Friday look back.
+async function openWeek() {
+  modal.classList.add("wide");
+  const w = await api(`/projects/${PROJECT.id}/week`);
+  const text = weekText(w);
+  $("#modal-body").innerHTML = `<h2>The week</h2><p class="small muted">${esc(w.from)} to ${esc(w.to)}. Compiled from your record; nothing is written for you.</p>
+    <div class="week">
+      ${sec("Entries you worked on", w.entries.map(e => `<li><button class="link" data-wexp="${e.experiment_id}">${esc(e.title)}</button> <span class="tiny muted">${esc([...new Set(e.did)].join(", "))}</span></li>`))}
+      ${sec("Readings", w.readings.map(r => `<li><strong>${esc(r.title)}</strong>: ${esc(r.interpretation)}${r.confidence != null ? ` <span class="tiny muted">${r.confidence}/100</span>` : ""}${r.surprise ? `<div class="tiny">surprised by: ${esc(r.surprise)}</div>` : ""}</li>`))}
+      ${sec("How things turned out", w.outcomes.map(o => `<li><strong>${esc(o.title)}</strong>: ${esc(o.verdict)}${o.confidence != null ? `, you had said ${o.confidence}/100` : ""}${o.notes ? `. ${esc(o.notes)}` : ""}</li>`))}
+      ${sec("Advice you weighed", w.advice.map(a => `<li>${esc(a.source)}: ${esc(a.said)}${a.stance ? ` <span class="tiny muted">${esc(a.stance)}${a.my_reason ? `, because ${esc(a.my_reason)}` : ""}</span>` : ""}</li>`))}
+      ${sec("Used", w.reagents.map(r => `<li>${esc(r.name)}${r.amount ? `, ${+r.amount.toFixed(3)} ${esc(r.unit)}` : ""} <span class="tiny muted">${r.n} time${r.n === 1 ? "" : "s"}</span></li>`).concat(w.cells.map(c => `<li>${esc(c.line)} ${esc(c.type)}${c.passage ? ` P${esc(c.passage)}` : ""}</li>`)))}
+      ${sec("Done", w.done.map(d => `<li>${esc(d)}</li>`))}
+      ${sec("Next, as you wrote it", w.next.map(n => `<li><strong>${esc(n.title)}</strong>: ${esc(n.step)}</li>`))}
+    </div>
+    <div class="row" style="margin-top:14px;flex-wrap:wrap"><button class="ghost" id="wk-copy">Copy as text</button><button class="ghost" id="wk-drive">Save to Google Drive</button><span class="tiny muted" id="wk-msg"></span></div>`;
+  modal.showModal();
+  $("#modal-body").querySelectorAll("[data-wexp]").forEach(b => b.onclick = async () => { modal.close(); await setPage("notebook"); await openExperiment(+b.dataset.wexp); });
+  $("#wk-copy").onclick = async () => { try { await navigator.clipboard.writeText(text); $("#wk-msg").textContent = "copied"; } catch { $("#wk-msg").textContent = "copy did not work here"; } };
+  $("#wk-drive").onclick = async () => {
+    $("#wk-msg").textContent = "saving…";
+    try { const out = await api(`/projects/${PROJECT.id}/brief/to_drive`, "POST", { markdown: text }); $("#wk-msg").innerHTML = out.url ? `<a href="${esc(out.url)}" target="_blank" rel="noopener">Open in Google Docs</a>` : "saved"; }
+    catch (e) { $("#wk-msg").textContent = e.message; }
+  };
+  function sec(title, items) { return `<section><h3>${title}</h3>${items.length ? `<ul class="wk">${items.join("")}</ul>` : `<p class="tiny muted">Nothing this week.</p>`}</section>`; }
+}
+function weekText(w) {
+  const L = [`# The week, ${w.from} to ${w.to}`, ""];
+  const part = (t, xs) => { if (xs.length) L.push(`## ${t}`, "", ...xs.map(x => `- ${x}`), ""); };
+  part("Entries", w.entries.map(e => `${e.title} (${[...new Set(e.did)].join(", ")})`));
+  part("Readings", w.readings.map(r => `${r.title}: ${r.interpretation}${r.confidence != null ? ` (${r.confidence}/100)` : ""}${r.surprise ? `. Surprised by: ${r.surprise}` : ""}`));
+  part("How things turned out", w.outcomes.map(o => `${o.title}: ${o.verdict}${o.notes ? `. ${o.notes}` : ""}`));
+  part("Advice weighed", w.advice.map(a => `${a.source}: ${a.said}${a.stance ? ` (${a.stance}${a.my_reason ? `, because ${a.my_reason}` : ""})` : ""}`));
+  part("Used", w.reagents.map(r => `${r.name}${r.amount ? `, ${+r.amount.toFixed(3)} ${r.unit}` : ""}`).concat(w.cells.map(c => `${c.line} ${c.type}${c.passage ? ` P${c.passage}` : ""}`)));
+  part("Done", w.done);
+  part("Next", w.next.map(n => `${n.title}: ${n.step}`));
+  return L.join("\n");
+}
+
 // A short first-run setup: who you are, what you want to get better at, and how much help you want.
 const GOALS = [
   ["confounders", "Spotting confounders and missing controls"],
@@ -2498,6 +2581,8 @@ $("#btn-todo").onclick = () => setPage("todo");
 $("#pg-notebook").onclick = () => setPage("notebook");
 $("#pg-today").onclick = () => setPage("today");
 $("#btn-lab").onclick = () => openLab(PROJECT.id, TODO_ON ? null : EXP);
+$("#btn-search").onclick = openSearch;
+$("#btn-week").onclick = openWeek;
 
 B.init().then(async () => {
   paintChain();

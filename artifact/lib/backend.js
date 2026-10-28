@@ -38,6 +38,12 @@ async function insChained(kind, fields) {
 }
 const upd = (rec, fields) => store.patch({ ...rec, ...fields });
 const del = (rec) => store.remove(rec);
+// Removals leave a line in the entry's history.
+const LOGGED = { ink_note: "handwritten note", highlight: "highlight", figure: "figure", dataset: "data file", advice: "advice", step_note: "step annotation", experiment_paper: "attached paper", recording: "voice memo" };
+async function delLogged(rec, experimentId, detail) {
+  await store.remove(rec);
+  if (experimentId) await ins("event", { experiment_id: experimentId, what: `removed ${LOGGED[rec._t] || rec._t}`, detail: String(detail || "").slice(0, 300) });
+}
 const exp = (id) => bundle(recs, Number(id));
 
 export function onChange(fn) { listeners.add(fn); }
@@ -343,8 +349,8 @@ route("DELETE", "/notes/{id}", async ({ id }) => {
     if (u.amount && r && r.amount_left != null) await upd(r, { amount_left: r.amount_left + u.amount });
     await del(u);
   }
-  for (const s of all("step_note").filter((x) => x.note_id === n.id)) await del(s);
-  await del(n);
+  // The note is kept, marked removed, so the entry's history still shows it.
+  await upd(n, { removed_at: now() });
   return exp(n.experiment_id);
 });
 route("POST", "/experiments/{id}/notes", async ({ id }, b) => {
@@ -370,7 +376,7 @@ route("POST", "/experiments/{id}/ink", async ({ id }, b) => {
   await ins("ink_note", { experiment_id: Number(id), strokes, width: b.width, height: b.height });
   return exp(id);
 });
-route("DELETE", "/ink/{id}", async ({ id }) => { const r = need("ink_note", id, "ink note"); await del(r); return exp(r.experiment_id); });
+route("DELETE", "/ink/{id}", async ({ id }) => { const r = need("ink_note", id, "ink note"); await delLogged(r, r.experiment_id, ""); return exp(r.experiment_id); });
 route("POST", "/experiments/{id}/highlights", async ({ id }, b) => {
   const text = (b.body || "").trim();
   if (!text) fail("Nothing selected.");
@@ -378,7 +384,7 @@ route("POST", "/experiments/{id}/highlights", async ({ id }, b) => {
   if (!all("highlight").some((h) => h.experiment_id === Number(id) && h.body === text)) await ins("highlight", { experiment_id: Number(id), body: text });
   return exp(id);
 });
-route("DELETE", "/highlights/{id}", async ({ id }) => { const h = need("highlight", id); await del(h); return exp(h.experiment_id); });
+route("DELETE", "/highlights/{id}", async ({ id }) => { const h = need("highlight", id); await delLogged(h, h.experiment_id, h.body); return exp(h.experiment_id); });
 route("POST", "/notes/{id}/annotations", async ({ id }, b) => {
   const n = need("note", id, "line");
   if (!(b.body || "").trim()) fail("Nothing written.");
@@ -388,7 +394,7 @@ route("POST", "/notes/{id}/annotations", async ({ id }, b) => {
 route("DELETE", "/annotations/{id}", async ({ id }) => {
   const a = need("step_note", id, "annotation");
   const n = get("note", a.note_id);
-  await del(a);
+  await delLogged(a, n && n.experiment_id, a.body);
   return exp(n.experiment_id);
 });
 
@@ -407,7 +413,7 @@ route("PUT", "/datasets/{id}", async ({ id }, b) => {
 route("DELETE", "/datasets/{id}", async ({ id }) => {
   const d = need("dataset", id, "dataset");
   await dropFile(d.asset_id);
-  await del(d);
+  await delLogged(d, d.experiment_id, d.label || d.filename);
   return d.experiment_id ? exp(d.experiment_id) : { deleted: d.id };
 });
 route("GET", "/projects/{pid}/datasets", ({ pid }) => all("dataset").filter((d) => d.project_id === Number(pid))
@@ -911,7 +917,7 @@ route("POST", "/experiments/{id}/figures", async ({ id }, b) => {
   return exp(e.id);
 });
 route("PUT", "/figures/{id}", async ({ id }, b) => { const f = need("figure", id); await upd(f, { caption: String(b.caption || "").trim() || f.caption }); return exp(f.experiment_id); });
-route("DELETE", "/figures/{id}", async ({ id }) => { const f = need("figure", id); await dropFile(f.asset_id); await del(f); return exp(f.experiment_id); });
+route("DELETE", "/figures/{id}", async ({ id }) => { const f = need("figure", id); await dropFile(f.asset_id); await delLogged(f, f.experiment_id, f.caption); return exp(f.experiment_id); });
 
 // ---------- weighing a second opinion: what moved you, and why ----------
 
@@ -1163,7 +1169,7 @@ route("PUT", "/advice/{id}", async ({ id }, b) => {
   await upd(a, f);
   return exp(a.experiment_id);
 });
-route("DELETE", "/advice/{id}", async ({ id }) => { const a = need("advice", id, "advice"); await del(a); return exp(a.experiment_id); });
+route("DELETE", "/advice/{id}", async ({ id }) => { const a = need("advice", id, "advice"); await delLogged(a, a.experiment_id, a.said); return exp(a.experiment_id); });
 
 // ---------- what the work is for, kept as versions ----------
 
@@ -1173,6 +1179,103 @@ route("POST", "/projects/{pid}/purpose", async ({ pid }, b) => {
   if (!String(b.text || "").trim()) fail("Write a sentence or two.");
   await ins("purpose", { project_id: Number(pid), text: String(b.text).trim(), why_changed: String(b.why_changed || "").trim() });
   return { current: purposes(pid)[0], history: purposes(pid).slice(1) };
+});
+
+// ---------- an entry's full history, oldest first ----------
+
+route("GET", "/experiments/{id}/history", ({ id }) => {
+  const e = need("experiment", id, "experiment");
+  const eid = e.id, rows = [];
+  const push = (at, what, detail, kind) => { if (at) rows.push({ at, what, detail: String(detail || ""), kind }); };
+  push(e.created_at, "entry started", e.title, "entry");
+  for (const n of all("note").filter((x) => x.experiment_id === eid)) {
+    push(n.created_at, n.source === "protocol" ? "protocol step" : "note", n.body, "note");
+    if (n.removed_at) push(n.removed_at, "note removed", n.body, "removed");
+    for (const a of all("step_note").filter((x) => x.note_id === n.id)) push(a.created_at, "step annotated", a.body, "note");
+  }
+  const commits = all("commitment").filter((c) => c.experiment_id === eid);
+  for (const c of commits) {
+    push(c.locked_at, "reading saved", c.interpretation, "reading");
+    for (const r of all("resolution").filter((x) => x.commitment_id === c.id)) push(r.created_at, `outcome: ${r.verdict}`, r.notes, "reading");
+  }
+  const cids = new Set(commits.map((c) => c.id));
+  for (const ch of all("challenge").filter((x) => x.experiment_id === eid || cids.has(x.commitment_id))) {
+    push(ch.created_at, "second opinion", (ch.blind.explanations || []).map((x) => x.label).join("; "), "opinion");
+    for (const w of all("weigh").filter((x) => x.challenge_id === ch.id)) push(w.created_at, `weighed possibility ${w.index + 1}: ${w.stance}`, w.reason, "opinion");
+    for (const r of all("response").filter((x) => x.challenge_id === ch.id)) push(r.created_at, `your take: ${r.stance}`, r.reasoning, "opinion");
+  }
+  for (const a of all("advice").filter((x) => x.experiment_id === eid)) {
+    push(a.created_at, `advice from ${a.source_type}${a.source_name ? `, ${a.source_name}` : ""}`, a.said, "advice");
+    if (a.weighed_at) push(a.weighed_at, `advice weighed: ${a.stance}`, a.my_reason, "advice");
+  }
+  for (const u of all("reagent_use").filter((x) => x.experiment_id === eid)) push(u.created_at, `used ${(get("reagent", u.reagent_id) || {}).name || "a reagent"}`, u.amount ? `${u.amount}` : u.note, "stock");
+  for (const ev of all("line_event").filter((x) => x.experiment_id === eid)) push(ev.created_at, `${(get("cell_line", ev.cell_line_id) || {}).name || "cell line"} ${ev.type}`, ev.passage ? `P${ev.passage}` : ev.note, "stock");
+  for (const d of all("dataset").filter((x) => x.experiment_id === eid)) push(d.created_at, "data attached", d.label || d.filename, "data");
+  for (const f of all("figure").filter((x) => x.experiment_id === eid)) push(f.created_at, "figure attached", f.caption, "data");
+  for (const k of all("ink_note").filter((x) => x.experiment_id === eid)) push(k.created_at, "handwritten note", "", "note");
+  for (const h of all("highlight").filter((x) => x.experiment_id === eid)) push(h.created_at, "highlighted", h.body, "note");
+  for (const x of all("event").filter((x) => x.experiment_id === eid)) push(x.created_at, x.what, x.detail, "removed");
+  if (e.shared_at) push(e.shared_at, "shared to Drive", e.shared_doc, "entry");
+  return rows.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+});
+
+// ---------- search across the whole notebook ----------
+
+route("GET", "/projects/{pid}/search", ({ pid }, _, q) => {
+  pid = Number(pid);
+  const term = (q.get("q") || "").trim().toLowerCase();
+  if (term.length < 2) return [];
+  const words = term.split(/\s+/);
+  const hit = (...xs) => { const t = xs.filter(Boolean).join(" ").toLowerCase(); return words.every((w) => t.includes(w)); };
+  const snip = (t) => { t = String(t || ""); const i = t.toLowerCase().indexOf(words[0]); return (i > 40 ? "…" : "") + t.slice(Math.max(0, i - 40), i + 120); };
+  const exps = all("experiment").filter((e) => e.project_id === pid);
+  const eids = new Set(exps.map((e) => e.id));
+  const title = (id) => (get("experiment", id) || {}).title || "";
+  const out = [];
+  for (const e of exps) if (hit(e.title, e.question, Object.entries(e.context || {}).flat().join(" "))) out.push({ kind: "entry", title: e.title, snippet: snip(e.question || Object.entries(e.context || {}).map(([k, v]) => `${k}: ${v}`).join(", ")), experiment_id: e.id });
+  for (const n of all("note").filter((n) => eids.has(n.experiment_id) && !n.removed_at && hit(n.body))) out.push({ kind: n.source === "protocol" ? "protocol" : "note", title: title(n.experiment_id), snippet: snip(n.body), experiment_id: n.experiment_id });
+  for (const c of all("commitment").filter((c) => eids.has(c.experiment_id) && hit(c.interpretation, c.observed, c.expected, c.surprise))) out.push({ kind: "reading", title: title(c.experiment_id), snippet: snip(c.interpretation), experiment_id: c.experiment_id });
+  for (const a of all("advice").filter((a) => eids.has(a.experiment_id) && hit(a.said, a.their_reason, a.my_reason, a.source_name))) out.push({ kind: "advice", title: title(a.experiment_id), snippet: snip(a.said), experiment_id: a.experiment_id });
+  for (const f of all("figure").filter((f) => eids.has(f.experiment_id) && hit(f.caption, f.path))) out.push({ kind: "figure", title: title(f.experiment_id), snippet: f.caption, experiment_id: f.experiment_id });
+  for (const d of all("dataset").filter((d) => d.project_id === pid && hit(d.label, d.filename, (d.columns || []).map((c) => c.name).join(" ")))) out.push({ kind: "data", title: d.label || d.filename, snippet: (d.columns || []).map((c) => c.name).slice(0, 8).join(", "), experiment_id: d.experiment_id });
+  for (const r of listReagents(pid).filter((r) => hit(r.name, r.supplier, r.catalogue, r.lot, r.location))) out.push({ kind: "reagent", title: r.name, snippet: [r.lot && `lot ${r.lot}`, r.location].filter(Boolean).join(", "), tool: "bench" });
+  for (const l of lines(pid).filter((l) => hit(l.name, l.source, l.notes))) out.push({ kind: "cell line", title: l.name, snippet: `${l.vials_left} vials`, tool: "freezer" });
+  for (const t of all("todo").filter((t) => !t.trashed_at && hit(t.title, t.body))) out.push({ kind: "to-do", title: t.title, snippet: snip(t.body), tool: "todo" });
+  for (const g of glossary(pid).filter((g) => hit(g.term, g.plain))) out.push({ kind: "term", title: g.term, snippet: g.plain, tool: "glossary" });
+  return out.slice(0, 60);
+});
+
+// ---------- the week, compiled from the record without a model ----------
+
+route("GET", "/projects/{pid}/week", ({ pid }, _, q) => {
+  pid = Number(pid);
+  const end = q.get("end") ? new Date(q.get("end") + "T23:59:59") : new Date();
+  const start = new Date(end.getTime() - 7 * 86400000);
+  const inWeek = (t) => t && Date.parse(t) >= start.getTime() && Date.parse(t) <= end.getTime();
+  const exps = all("experiment").filter((e) => e.project_id === pid);
+  const eids = new Set(exps.map((e) => e.id));
+  const touched = new Map();
+  const touch = (eid, what) => { if (!eids.has(eid)) return; const t = touched.get(eid) || { experiment_id: eid, title: (get("experiment", eid) || {}).title, did: [] }; t.did.push(what); touched.set(eid, t); };
+  for (const e of exps) if (inWeek(e.created_at)) touch(e.id, "started");
+  for (const n of all("note").filter((n) => inWeek(n.created_at) && !n.removed_at)) touch(n.experiment_id, "note");
+  const readings = all("commitment").filter((c) => eids.has(c.experiment_id) && inWeek(c.locked_at));
+  for (const c of readings) touch(c.experiment_id, "reading");
+  const outcomes = all("resolution").filter((r) => inWeek(r.created_at)).map((r) => ({ ...r, c: get("commitment", r.commitment_id) })).filter((r) => r.c && eids.has(r.c.experiment_id));
+  for (const r of outcomes) touch(r.c.experiment_id, `outcome ${r.verdict}`);
+  const uses = all("reagent_use").filter((u) => inWeek(u.created_at) && (!u.experiment_id || eids.has(u.experiment_id)));
+  const byReagent = {};
+  for (const u of uses) { const r = get("reagent", u.reagent_id); if (!r || r.project_id !== pid) continue; const k = r.name; (byReagent[k] ||= { name: k, unit: r.unit || "", amount: 0, n: 0 }); byReagent[k].amount += u.amount || 0; byReagent[k].n += 1; }
+  return {
+    from: start.toISOString().slice(0, 10), to: end.toISOString().slice(0, 10),
+    entries: [...touched.values()],
+    readings: readings.map((c) => ({ experiment_id: c.experiment_id, title: (get("experiment", c.experiment_id) || {}).title, interpretation: c.interpretation, confidence: c.confidence, surprise: c.surprise || "" })),
+    outcomes: outcomes.map((r) => ({ title: (get("experiment", r.c.experiment_id) || {}).title, verdict: r.verdict, notes: r.notes, confidence: r.c.confidence })),
+    advice: all("advice").filter((a) => eids.has(a.experiment_id) && (inWeek(a.created_at) || inWeek(a.weighed_at))).map((a) => ({ title: (get("experiment", a.experiment_id) || {}).title, source: a.source_type, said: a.said, stance: a.stance, my_reason: a.my_reason })),
+    reagents: Object.values(byReagent),
+    cells: all("line_event").filter((e) => inWeek(e.created_at)).map((e) => ({ line: (get("cell_line", e.cell_line_id) || {}).name, type: e.type, passage: e.passage, date: e.date })).filter((x) => x.line),
+    done: all("todo").filter((t) => !t.trashed_at && t.status === "done" && inWeek(t.updated_at)).map((t) => t.title),
+    next: (() => { const out = []; for (const e of exps) { const b = exp(e.id); const c = b.commitments[b.commitments.length - 1]; if (c && c.proposed_next) out.push({ title: b.title, step: c.proposed_next }); } return out; })(),
+  };
 });
 
 async function R_get(path) { return api(path); }
