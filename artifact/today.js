@@ -147,7 +147,7 @@ function purposeBox() {
 }
 
 // The things you said you wanted to get better at, each with one honest number from the record.
-const GOAL_LABEL = { confounders: "Spotting confounders", calibration: "Knowing how sure to be", record: "A record someone could follow", weighing: "Weighing advice on its reasons", writing: "Turning work into writing" };
+const GOAL_LABEL = { confounders: "Spotting confounders", calibration: "Knowing how sure to be", record: "A record someone could follow", weighing: "Weighing advice on its reasons", writing: "Turning work into writing", standing: "Answering for my claims" };
 function goalsBox() {
   const goals = (T.profile && T.profile.goals) || [];
   if (!goals.length) return "";
@@ -159,6 +159,7 @@ function goalsBox() {
     record: `${r.with_reading} of ${r.entries} entries have a reading, ${r.resolved} an outcome, ${r.with_data} data or figures`,
     weighing: reasonedPct != null ? `${reasonedPct}% of what you weighed came with a reason` : "nothing weighed yet",
     writing: "briefs and slides come from the record above, so a fuller record makes them better",
+    standing: `${T.standing.answerable} of ${T.standing.claims} claims you can answer for; ${T.standing.answered} of ${T.standing.challenges} challenges answered, ${T.standing.from_people} from people`,
   };
   return `<div class="goals-row">${goals.map((g) => `<div class="goal"><div class="sub-h" style="margin:0">${esc(GOAL_LABEL[g] || g)}</div><div class="small">${esc(line[g] || "")}</div></div>`).join("")}</div>`;
 }
@@ -209,6 +210,13 @@ function draw() {
       ${card("Bookings this week", t.bookings.length ? t.bookings.map((b) => `<div class="tl small"><strong>${esc(b.resource)}</strong>
         ${new Date(b.start).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })} ${hm(b.start)}–${hm(b.end)}${Number(b.buffer_min) ? `, then ${b.buffer_min} min UV or cleaning` : ""}${b.purpose ? `<div class="tiny muted">${esc(b.purpose)}</div>` : ""}</div>`).join("")
         : `<p class="small muted">No hoods, rooms or instruments booked.</p>`, `<button class="ghost sm" data-tool="lab-bookings" style="margin-top:10px">Book something</button>`)}
+      ${card("Owed answers", t.standing.owed.length ? t.standing.owed.slice(0, 6).map((o) => `<div class="tl">
+        ${o.experiment_id ? `<button class="link tl-t" data-exp="${o.experiment_id}">${esc(o.claim)}</button>` : `<strong>${esc(o.claim)}</strong>`}
+        <div class="small">${esc(o.text.split("\n")[0])}</div><div class="tiny muted">challenged by ${esc(o.by)}, ${esc(o.date)}</div></div>`).join("")
+        : t.standing.claims ? `<p class="small muted">Every challenge to your claims has an answer. ${t.standing.answerable} of ${t.standing.claims} you can answer for: linked to what they rest on and in your own words.</p>`
+        : `<p class="small muted">Add the claims you would stand behind on any entry. Challenges to them, from you, colleagues or the agent, wait here until you answer.</p>`,
+        `<button class="ghost sm" data-tool="claims" style="margin-top:10px">Open Claims</button>`)}
+      ${(t.questions || []).length ? card("Questions you are following", t.questions.map((q) => `<div class="tl small"><strong>${esc(q.text)}</strong>${q.why ? `<div class="tiny muted">${esc(q.why)}</div>` : ""}</div>`).join(""), `<button class="ghost sm" data-tool="claims-questions" style="margin-top:10px">Questions</button>`) : ""}
       ${card("Surprises", j.surprises.length ? j.surprises.map((x) => `<div class="tl"><button class="link tl-t" data-exp="${x.experiment_id}">${esc(x.title)}</button>
         <div class="small">${esc(x.text)}</div><div class="tiny muted">${esc(x.date)}</div></div>`).join("")
         + `<div class="tiny muted" style="margin-top:6px">${j.revised_entries ? `${j.revised_entries} entr${j.revised_entries === 1 ? "y has" : "ies have"} more than one reading: your view moved.` : ""}</div>`

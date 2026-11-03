@@ -1,7 +1,7 @@
 // The routes from benchcraft/app.py, answered inside the page against the researcher's own storage.
 import { openStore } from "./store.js";
 import { seal, verify, ledgerOf } from "./chain.js";
-import { bundle, stage, experimentText, folderHistory, calibration, graph, judgment, byKind } from "./cycle.js";
+import { bundle, stage, experimentText, folderHistory, calibration, graph, judgment, byKind, claimsOf, claimView, standing } from "./cycle.js";
 import * as P from "./prompts.js";
 import * as calc from "./calc.js";
 import { TEMPLATES, byId as templateById } from "./templates.js";
@@ -261,6 +261,7 @@ route("POST", "/projects/{pid}/experiments", async ({ pid }, b) => {
 });
 
 route("GET", "/experiments/{id}", ({ id }) => exp(id) || fail("No such experiment"));
+route("PUT", "/experiments/{id}/question", async ({ id }, b) => { await upd(need("experiment", id, "experiment"), { question: String(b.question || "").trim() }); return exp(id); });
 
 route("PUT", "/experiments/{id}/mode", async ({ id }, b) => {
   if (!["notebook", "cycle"].includes(b.mode)) fail("mode must be notebook or cycle");
@@ -337,6 +338,7 @@ route("DELETE", "/experiments/{id}", async ({ id }) => {
   for (const s of all("step_note").filter((x) => noteIds.has(x.note_id))) await del(s);
   for (const d of all("dataset").filter((x) => x.experiment_id === eid)) await upd(d, { experiment_id: null });
   for (const u of all("reagent_use").filter((x) => x.experiment_id === eid)) await upd(u, { experiment_id: null });
+  for (const c of all("claim").filter((x) => x.experiment_id === eid)) await upd(c, { experiment_id: null, from_entry: e.title });
   // Locked records stay in the chain; without their experiment they drop out of every view.
   await del(e);
   return { deleted: eid, project_id: e.project_id };
@@ -449,13 +451,24 @@ route("PUT", "/settings", async (_, b) => {
   return all("setting")[0];
 });
 // A challenge on the record as it stands, asked for before or without a locked view.
+// What the model said before on this entry, and how each possibility was weighed.
+function earlierOpinions(e) {
+  const chs = [...(e.early_challenges || []), ...e.commitments.flatMap((c) => c.challenges)].sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+  return chs.map((ch) => ({
+    date: ch.created_at.slice(0, 10),
+    items: (ch.blind.explanations || []).map((x, i) => {
+      const w = [...(ch.weighs || [])].reverse().find((v) => v.index === i);
+      return { label: x.label, statement: x.statement, stance: w ? w.stance : "", reason: w ? w.reason : "" };
+    }),
+  }));
+}
 route("POST", "/experiments/{id}/challenge", async ({ id }) => {
   const e = exp(id) || fail("No such experiment");
   if (!e.notes.length && !e.question && !Object.keys(e.context).length) fail("Write a note or two first, so there is something to challenge.");
   const last = e.commitments[e.commitments.length - 1];
   const c = { aim: last ? last.aim : "", expected: last ? last.expected : "", observed: last ? last.observed : "(nothing summarised yet; the bench notes are the record)" };
   const f = get("folder", e.folder_id);
-  const blind = await ask(P.blindInput(e, c, folderHistory(recs, e.id), f ? f.name : ""), { check: P.checkBlind });
+  const blind = await ask(P.blindInput(e, c, folderHistory(recs, e.id), f ? f.name : "", earlierOpinions(e)), { check: P.checkBlind });
   await insChained("challenge", { experiment_id: e.id, commitment_id: null, model: "claude.ai, complex tier", blind, divergence: null, created_at: now() });
   return exp(id);
 });
@@ -463,7 +476,7 @@ route("POST", "/commitments/{id}/challenge", async ({ id }) => {
   const c = need("commitment", id, "commitment");
   const e = exp(c.experiment_id);
   const f = get("folder", e.folder_id);
-  const blind = await ask(P.blindInput(e, c, folderHistory(recs, e.id), f ? f.name : ""), { check: P.checkBlind });
+  const blind = await ask(P.blindInput(e, c, folderHistory(recs, e.id), f ? f.name : "", earlierOpinions(e)), { check: P.checkBlind });
   const div = await ask(P.divergenceInput(e, c, blind), { check: P.checkDivergence });
   await insChained("challenge", { commitment_id: c.id, model: "claude.ai, complex tier", blind, divergence: div, created_at: now() });
   return exp(c.experiment_id);
@@ -635,10 +648,23 @@ route("DELETE", "/experiments/{id}/papers/{key}", async ({ id, key }) => {
 route("GET", "/projects/{pid}/brief", async ({ pid }) => {
   const project = need("project", pid, "project");
   const exps = all("experiment").filter((e) => e.project_id === project.id).sort((a, b) => (a.created_at < b.created_at ? -1 : 1)).map((e) => exp(e.id));
-  const input = P.briefInput(project, exps);
+  const input = P.briefInput(project, exps, claimsOf(recs, (c) => c.project_id === project.id));
   if (!input) return { markdown: "_No locked commitments yet, nothing to brief on._" };
-  return { markdown: await ask(input, { json: false }) };
+  return { markdown: (await ask(input, { json: false })) + claimsAppendix(project.id) };
 });
+// Written from the record, not by the model: each claim, what it rests on, and what is still owed.
+function claimsAppendix(pid) {
+  const cs = claimsOf(recs, (c) => c.project_id === pid);
+  if (!cs.length) return "";
+  const line = (c) => {
+    const src = claimSources(c);
+    const rests = (c.rests_on || []).map((r) => (src[`${r.k}:${r.id}`] || r.label || "").slice(0, 120)).filter(Boolean);
+    const tags = [c.basis === "relied" ? `relying on ${c.relied_on || "someone else"}` : "", c.basis === "agent" ? "first suggested by AI" : "", c.missing.length ? c.missing.join(", ") : "", c.open ? `${c.open} challenge${c.open > 1 ? "s" : ""} unanswered` : ""].filter(Boolean);
+    return `- ${c.text}${tags.length ? ` _(${tags.join("; ")})_` : ""}${rests.length ? "\n" + rests.map((r) => `  - rests on: ${r}`).join("\n") : ""}`;
+  };
+  const live = cs.filter((c) => c.status !== "withdrawn"), gone = cs.filter((c) => c.status === "withdrawn");
+  return `\n\n## Claims and what they rest on\n\n${live.map(line).join("\n") || "_none standing_"}${gone.length ? `\n\n**Withdrawn**\n\n${gone.map((c) => `- ~~${c.text}~~ ${c.withdrawn_reason ? `(${c.withdrawn_reason})` : ""}`).join("\n")}` : ""}`;
+}
 route("GET", "/projects/{pid}/graph", ({ pid }) => graph(recs, Number(pid)));
 route("GET", "/projects/{pid}/calibration", ({ pid }) => calibration(recs, Number(pid)));
 
@@ -883,7 +909,9 @@ route("POST", "/projects/{pid}/slides", async ({ pid }, b) => {
   exps = exps.sort((a, c) => (a.created_at < c.created_at ? -1 : 1)).map((e) => exp(e.id));
   const scope = b.experiment_id ? exps[0].title : b.folder_id ? (get("folder", b.folder_id) || {}).name : project.name;
   const prior = b.deck_id ? get("deck", b.deck_id) : null;
-  const deck = await ask(P.slidesInput(scope, exps, prior ? prior.deck : null), { check: P.checkSlides });
+  const ids = new Set(exps.map((e) => e.id));
+  const claims = claimsOf(recs, (c) => c.project_id === project.id && (b.experiment_id || b.folder_id ? ids.has(c.experiment_id) : true));
+  const deck = await ask(P.slidesInput(scope, exps, prior ? prior.deck : null, claims), { check: P.checkSlides });
   const labels = new Map(exps.flatMap((e) => e.datasets).map((d) => [d.label || d.filename, d]));
   const figs = new Map(exps.flatMap((e) => e.figures || []).map((f) => [f.caption, f]));
   for (const s of deck.slides) {
@@ -1041,6 +1069,8 @@ route("GET", "/projects/{pid}/today", ({ pid }) => {
     approvals: all("approval").filter((a) => a.project_id === pid && a.status !== "approved" && a.status !== "declined"),
     checklists: all("checklist").filter((c) => c.project_id === pid).map((c) => ({ ...c, done_today: all("check_log").some((l) => l.checklist_id === c.id && l.date === day) })),
     judgment: judgment(recs, pid),
+    standing: standing(recs, pid),
+    questions: all("question").filter((x) => x.project_id === pid && (!x.status || ["open", "pursuing"].includes(x.status))),
     purpose: purposes(pid)[0] || null,
     profile: (all("setting")[0] || {}).profile || null,
     record: (() => {
@@ -1313,6 +1343,142 @@ route("GET", "/projects/{pid}/week", ({ pid }, _, q) => {
     next: (() => { const out = []; for (const e of exps) { const b = exp(e.id); const c = b.commitments[b.commitments.length - 1]; if (c && c.proposed_next) out.push({ title: b.title, step: c.proposed_next }); } return out; })(),
   };
 });
+
+// ---------- claims: what you stand behind, what it rests on, and every challenge to it ----------
+
+const BASES = ["own", "relied", "agent"];
+const BY = ["me", "colleague", "reviewer", "agent"];
+const OUTCOMES = ["stands", "revised", "withdrawn"];
+const claimOut = (c) => claimView(recs, get("claim", c.id) || c);
+const claimFields = (b) => {
+  const f = {};
+  if ("rests_on" in b) f.rests_on = (Array.isArray(b.rests_on) ? b.rests_on : []).filter((r) => r && r.k && r.id != null).map((r) => ({ k: String(r.k), id: String(r.id), label: String(r.label || "").slice(0, 200) }));
+  for (const k of ["my_account", "relied_on", "why_trust"]) if (k in b) f[k] = String(b[k] || "").trim();
+  if ("basis" in b) f.basis = BASES.includes(b.basis) ? b.basis : "own";
+  if ("question_id" in b) f.question_id = b.question_id ? Number(b.question_id) : null;
+  return f;
+};
+// The text of everything a claim can point at, looked up fresh so edits and removals show.
+function claimSources(c) {
+  const out = {};
+  const e = c.experiment_id ? exp(c.experiment_id) : null;
+  if (!e) return out;
+  for (const n of e.notes) out[`note:${n.id}`] = n.body;
+  for (const d of e.datasets) out[`dataset:${d.id}`] = (d.label || d.filename) + ((d.columns || []).length ? ` (${(d.columns || []).filter((x) => x.numeric).map((x) => `${x.name} mean ${x.mean}, n=${x.n}`).slice(0, 6).join("; ")})` : "");
+  for (const f of e.figures || []) out[`figure:${f.id}`] = `figure: ${f.caption}`;
+  for (const r of e.commitments) out[`reading:${r.id}`] = `their reading on ${r.locked_at.slice(0, 10)}: ${r.interpretation}. Observed: ${r.observed}`;
+  for (const a of e.advice || []) out[`advice:${a.id}`] = `${a.source_type}${a.source_name ? ` ${a.source_name}` : ""} said: ${a.said}${a.their_reason ? `, because ${a.their_reason}` : ""}`;
+  for (const p of e.papers) out[`paper:${p.zotero_key}`] = `a paper in their library (${p.zotero_key})`;
+  for (const ch of [...(e.early_challenges || []), ...e.commitments.flatMap((x) => x.challenges)]) (ch.blind.explanations || []).forEach((x, i) => { out[`opinion:${ch.id}.${i}`] = `an AI second opinion suggested: ${x.label}. ${x.statement}`; });
+  return out;
+}
+const claimEvent = (c, type, f) => insChained("claim_event", { claim_id: c.id, type, created_at: now(), ...f });
+
+route("GET", "/projects/{pid}/claims", ({ pid }, _, q) => {
+  const eid = q.get("experiment_id");
+  return claimsOf(recs, (c) => c.project_id === Number(pid) && (!eid || c.experiment_id === Number(eid)))
+    .map((c) => ({ ...c, entry_title: c.experiment_id ? (get("experiment", c.experiment_id) || {}).title || "" : "" }));
+});
+route("POST", "/projects/{pid}/claims", async ({ pid }, b) => {
+  const text = String(b.text || "").trim();
+  if (!text) fail("Write the claim in a sentence.");
+  if (b.experiment_id) need("experiment", b.experiment_id, "experiment");
+  const c = await ins("claim", { project_id: Number(pid), experiment_id: b.experiment_id ? Number(b.experiment_id) : null, text, status: "standing", rests_on: [], basis: "own", my_account: "", relied_on: "", why_trust: "", question_id: null, ...claimFields(b), from: b.from || null });
+  await claimEvent(c, "asserted", { text, basis: c.basis });
+  return claimOut(c);
+});
+route("PUT", "/claims/{id}", async ({ id }, b) => { const c = need("claim", id); await upd(c, claimFields(b)); return claimOut(c); });
+route("DELETE", "/claims/{id}", async ({ id }) => {
+  const c = need("claim", id);
+  if (claimOut(c).challenges.length) fail("This claim has been challenged, so it stays on the record. Withdraw it instead.");
+  await del(c);
+  return { deleted: c.id };
+});
+route("POST", "/claims/{id}/revise", async ({ id }, b) => {
+  const c = need("claim", id);
+  const text = String(b.text || "").trim();
+  if (!text || text === c.text) fail("Write the new wording.");
+  await claimEvent(c, "revised", { text: String(b.reason || "").trim(), old_text: c.text, new_text: text });
+  await upd(c, { text, status: "standing" });
+  return claimOut(c);
+});
+route("POST", "/claims/{id}/withdraw", async ({ id }, b) => {
+  const c = need("claim", id);
+  if (!String(b.reason || "").trim()) fail("Say why you are withdrawing it. That is the part worth keeping.");
+  await claimEvent(c, "withdrawn", { text: String(b.reason).trim() });
+  await upd(c, { status: "withdrawn" });
+  return claimOut(c);
+});
+route("POST", "/claims/{id}/restate", async ({ id }, b) => {
+  const c = need("claim", id);
+  if (!String(b.reason || "").trim()) fail("Say what changed.");
+  await claimEvent(c, "restated", { text: String(b.reason).trim() });
+  await upd(c, { status: "standing" });
+  return claimOut(c);
+});
+route("POST", "/claims/{id}/challenges", async ({ id }, b) => {
+  const c = need("claim", id);
+  const by = BY.includes(b.by_type) && b.by_type !== "agent" ? b.by_type : "me";
+  if (!String(b.text || "").trim()) fail("Write the challenge.");
+  await claimEvent(c, "challenged", { by_type: by, by_name: String(b.by_name || "").trim(), text: String(b.text).trim() });
+  return claimOut(c);
+});
+// The agent questions the claim, and is shown its own earlier challenges and how they were answered.
+route("POST", "/claims/{id}/agent_challenge", async ({ id }) => {
+  const c = need("claim", id);
+  const v = claimOut(c);
+  const earlier = v.challenges.filter((x) => x.by_type === "agent").map((x) => ({
+    date: x.created_at.slice(0, 10), asked: x.text,
+    answer: x.answer ? x.answer.text : "", outcome: x.answer ? x.answer.outcome : "", new_text: x.answer ? x.answer.new_text || "" : "",
+  }));
+  const qn = c.question_id ? get("question", c.question_id) : null;
+  const e = c.experiment_id ? exp(c.experiment_id) : null;
+  const out = await ask(P.claimChallengeInput(c, e, claimSources(c), earlier, qn ? qn.text : ""), { check: P.checkClaimChallenge });
+  await claimEvent(c, "challenged", { by_type: "agent", by_name: "claude.ai, complex tier", text: out.questions.join("\n"), weakest_link: out.weakest_link, would_withdraw_if: out.would_withdraw_if, on_earlier: out.on_earlier });
+  return claimOut(c);
+});
+route("POST", "/claim_events/{id}/answer", async ({ id }, b) => {
+  const ev = need("claim_event", id, "challenge");
+  if (ev.type !== "challenged") fail("Only a challenge can be answered.");
+  const c = need("claim", ev.claim_id);
+  if (claimOut(c).challenges.find((x) => x.id === ev.id).answer) fail("You already answered this one. Add a new challenge to reopen it.");
+  if (!OUTCOMES.includes(b.outcome)) fail("Say whether the claim stands, is revised or is withdrawn.");
+  const reason = String(b.reason || "").trim();
+  if (!reason) fail("Answer it in a sentence or two.");
+  const newText = String(b.new_text || "").trim();
+  if (b.outcome === "revised" && (!newText || newText === c.text)) fail("Write the revised claim.");
+  await claimEvent(c, "answered", { answers: ev.id, outcome: b.outcome, text: reason, ...(b.outcome === "revised" ? { old_text: c.text, new_text: newText } : {}) });
+  if (b.outcome === "revised") await upd(c, { text: newText, status: "standing" });
+  if (b.outcome === "withdrawn") await upd(c, { status: "withdrawn" });
+  return claimOut(c);
+});
+// A draft to a colleague asking them to find the weak point; it is never sent from here.
+route("POST", "/claims/{id}/ask", async ({ id }, b) => {
+  const c = need("claim", id);
+  const contact = b.contact_id ? need("contact", b.contact_id) : null;
+  const email = contact ? contact.email : String(b.email || "").trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email || "")) fail("Pick a contact with an email, or type an address.");
+  const name = contact ? contact.name : String(b.name || "").trim();
+  const m = window.claude ? await window.claude.use("mcp") : null;
+  if (!m) fail("Gmail is reached through your Claude account. Open Benchcraft inside Claude.");
+  const src = claimSources(c);
+  const rests = (c.rests_on || []).map((r) => `  - ${src[`${r.k}:${r.id}`] || r.label}`);
+  const body = `Hi ${name || ""},\n\nI'm claiming:\n\n  ${c.text}\n\n${rests.length ? "It rests on:\n" + rests.join("\n") + "\n\n" : ""}${c.my_account ? `How I'd defend it: ${c.my_account}\n\n` : ""}Where is it weakest, and what would make you doubt it?\n\nThanks`;
+  try {
+    const r = await m.callTool("Gmail", "create_draft", { to: [email], subject: `Could you poke holes in this? ${c.text.slice(0, 60)}`, body });
+    const d = r.payload ?? JSON.parse(r.content?.[0]?.text || "{}");
+    await claimEvent(c, "asked", { by_type: "colleague", by_name: name || email, text: "" });
+    return { url: d.viewUrl || "", to: email, claim: claimOut(c) };
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    if (e.code === "server_not_connected") fail("Connect Gmail in claude.ai Settings, Connectors, then try again.");
+    fail(`Gmail said no (${e.code || e.message}).`);
+  }
+});
+route("GET", "/projects/{pid}/standing", ({ pid }) => standing(recs, Number(pid)));
+
+// Questions you chose to pursue, why they matter to you, and what each one gave you.
+crud("question", "questions", ["text", "why", "status", "yielded"], needName("text", "Write the question."));
 
 async function R_get(path) { return api(path); }
 

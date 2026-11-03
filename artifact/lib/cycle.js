@@ -43,6 +43,7 @@ export function bundle(recs, expId) {
     cell_events: of("line_event", "experiment_id", expId).sort(byTime("created_at")).map((ev) => ({
       ...strip(ev), line_name: (recs.find((r) => r._t === "cell_line" && r.id === ev.cell_line_id) || {}).name || "",
     })),
+    claims: claimsOf(recs, (c) => c.experiment_id === expId),
     early_challenges: of("challenge", "experiment_id", expId).filter((ch) => !ch.commitment_id).sort(byTime("created_at"))
       .map((ch) => ({ ...strip(ch), weighs: of("weigh", "challenge_id", ch.id).sort(byTime("created_at")).map(strip) })),
   };
@@ -178,5 +179,47 @@ export function judgment(recs, projectId) {
     left_unweighed: Math.max(0, offered - ws.length),
     sources, surprises,
     revised_entries: Object.values(perExp).filter((n) => n > 1).length,
+  };
+}
+
+// A claim with its record: every challenge, whether it was answered, and whether the researcher can answer for it.
+export function claimView(recs, c) {
+  const evs = byKind(recs, "claim_event").filter((e) => e.claim_id === c.id).sort((a, b) => a.seq - b.seq).map(strip);
+  const answers = new Map(evs.filter((e) => e.type === "answered").map((e) => [e.answers, e]));
+  const challenges = evs.filter((e) => e.type === "challenged").map((e) => ({ ...e, answer: answers.get(e.id) || null }));
+  const words = String(c.my_account || "").trim().split(/\s+/).filter(Boolean).length;
+  const missing = [];
+  if (!(c.rests_on || []).length) missing.push("nothing linked that it rests on");
+  if (words < 8) missing.push("not yet in your own words");
+  if (c.basis === "relied" && !String(c.relied_on || "").trim()) missing.push("who you are relying on");
+  const withdrawn = [...evs].reverse().find((e) => e.type === "withdrawn" || e.type === "restated" || (e.type === "answered" && e.outcome === "withdrawn"));
+  return {
+    ...strip(c), events: evs, challenges,
+    open: challenges.filter((x) => !x.answer).length,
+    answerable: !missing.length, missing,
+    withdrawn_reason: c.status === "withdrawn" && withdrawn ? withdrawn.text : "",
+  };
+}
+
+export function claimsOf(recs, filter) {
+  return byKind(recs, "claim").filter(filter).sort(byTime("created_at")).map((c) => claimView(recs, c));
+}
+
+// How the researcher stands behind what they claim: answerable, relied on, withdrawn, challenges owed.
+export function standing(recs, projectId) {
+  const cs = claimsOf(recs, (c) => c.project_id === projectId);
+  const live = cs.filter((c) => c.status !== "withdrawn");
+  const chs = cs.flatMap((c) => c.challenges);
+  const owed = cs.flatMap((c) => c.challenges.filter((x) => !x.answer).map((x) => ({ claim_id: c.id, claim: c.text, experiment_id: c.experiment_id, by: x.by_name || x.by_type, by_type: x.by_type, date: x.created_at.slice(0, 10), text: x.text })));
+  return {
+    claims: live.length, answerable: live.filter((c) => c.answerable).length,
+    relied: live.filter((c) => c.basis === "relied").length,
+    agent_unexplained: live.filter((c) => c.basis === "agent" && c.missing.includes("not yet in your own words")).length,
+    withdrawn: cs.length - live.length,
+    revised: cs.filter((c) => c.events.some((e) => e.type === "revised" || (e.type === "answered" && e.outcome === "revised"))).length,
+    challenges: chs.length, answered: chs.filter((x) => x.answer).length,
+    from_people: chs.filter((x) => x.by_type === "colleague" || x.by_type === "reviewer").length,
+    from_agent: chs.filter((x) => x.by_type === "agent").length,
+    owed,
   };
 }

@@ -267,3 +267,71 @@ test("history keeps removed notes, search finds them only while live, the week c
   assert.equal(w.readings.length, 1);
   assert.ok(w.next.some((n) => n.step === "keep the tray"));
 });
+
+test("claims keep what they rest on, every challenge and answer, and the agent sees its own record", async () => {
+  const p = await api("/projects", "POST", { name: "Claims", description: "" });
+  const e = await api(`/projects/${p.id}/experiments`, "POST", { title: "Run 1", question: "Does drying cause the drop?", context: {}, mode: "notebook" });
+  const x = await api(`/experiments/${e.id}/notes`, "POST", { body: "outer wells lost volume overnight" });
+  let c = await api(`/projects/${p.id}/claims`, "POST", { experiment_id: e.id, text: "Edge evaporation explains the low outer wells." });
+  assert.equal(c.answerable, false);
+  assert.deepEqual(c.missing, ["nothing linked that it rests on", "not yet in your own words"]);
+  c = await api(`/claims/${c.id}`, "PUT", { rests_on: [{ k: "note", id: x.notes[0].id, label: "outer wells" }], my_account: "the outer wells lost volume and the inner ones did not, on the same plate" });
+  assert.equal(c.answerable, true);
+
+  c = await api(`/claims/${c.id}/challenges`, "POST", { by_type: "colleague", by_name: "Sam", text: "Could it be seeding density at the edge?" });
+  assert.equal(c.open, 1);
+  assert.equal((await api(`/projects/${p.id}/standing`)).owed.length, 1);
+  await assert.rejects(api(`/claims/${c.id}`, "DELETE"), /Withdraw it instead/);
+  c = await api(`/claim_events/${c.challenges[0].id}/answer`, "POST", { outcome: "revised", reason: "seeding was checked, but only on one plate", new_text: "Edge evaporation likely explains it on this plate." });
+  assert.equal(c.text, "Edge evaporation likely explains it on this plate.");
+  assert.equal(c.open, 0);
+  await assert.rejects(api(`/claim_events/${c.challenges[0].id}/answer`, "POST", { outcome: "stands", reason: "x" }), /already answered/);
+
+  const seen = [];
+  const prev = globalThis.window.claude;
+  const sample = { json: async (input) => { seen.push(input); return { questions: ["What did the inner wells read?"], weakest_link: "one plate", would_withdraw_if: "a sealed plate shows the same drop", on_earlier: [] }; } };
+  globalThis.window.claude = { use: async (n) => (n === "sample" ? sample : null) };
+  try {
+    c = await api(`/claims/${c.id}/agent_challenge`, "POST");
+    await api(`/claim_events/${c.challenges[1].id}/answer`, "POST", { outcome: "stands", reason: "inner wells read normal, 1.0 vs 0.82" });
+    c = await api(`/claims/${c.id}/agent_challenge`, "POST");
+  } finally { globalThis.window.claude = prev; }
+  assert.match(seen[0], /outer wells lost volume overnight/);
+  assert.doesNotMatch(seen[0], /oldest first, with what the researcher answered/);
+  assert.match(seen[1], /YOUR EARLIER CHALLENGES[\s\S]*inner wells read normal/);
+  assert.equal(c.challenges.length, 3);
+
+  c = await api(`/claims/${c.id}/withdraw`, "POST", { reason: "the sealed plate dropped too" });
+  assert.equal(c.status, "withdrawn");
+  assert.equal(c.withdrawn_reason, "the sealed plate dropped too");
+  const st = await api(`/projects/${p.id}/standing`);
+  assert.equal(st.withdrawn, 1);
+  assert.equal(st.from_people, 1);
+  assert.equal(st.from_agent, 2);
+  assert.equal(await B.chainCheck(), null);
+  assert.equal((await api(`/experiments/${e.id}`)).claims.length, 1);
+
+  await api(`/experiments/${e.id}`, "DELETE");
+  const kept = await api(`/projects/${p.id}/claims`);
+  assert.equal(kept[0].experiment_id, null);
+  assert.equal(kept[0].from_entry, "Run 1");
+});
+
+test("a second opinion is shown what it said last time and how each possibility was weighed", async () => {
+  const p = await api("/projects", "POST", { name: "Opinions", description: "" });
+  const e = await api(`/projects/${p.id}/experiments`, "POST", { title: "Run 2", question: "Why low?", context: {}, mode: "notebook" });
+  await api(`/experiments/${e.id}/notes`, "POST", { body: "plate felt warm" });
+  const ex = (l) => ({ label: l, statement: `${l} did it`, kind: "technical", supports: ["x"], contradicts: ["y"], would_rule_out: "z" });
+  const seen = [];
+  const sample = { json: async (input) => { seen.push(input); return { explanations: [ex("heat"), ex("drying"), ex("seeding")], confounders: [], missing_controls: [], discriminating_experiment: { description: "d", cost: "hours", reads_out: "r" }, since_last_time: seen.length > 1 ? ["still think heat"] : [] }; } };
+  const prev = globalThis.window.claude;
+  globalThis.window.claude = { use: async (n) => (n === "sample" ? sample : null) };
+  try {
+    let x = await api(`/experiments/${e.id}/challenge`, "POST");
+    await api(`/challenges/${x.early_challenges[0].id}/weigh`, "POST", { index: 0, stance: "not", reason: "the incubator log was flat all night" });
+    x = await api(`/experiments/${e.id}/challenge`, "POST");
+    assert.deepEqual(x.early_challenges[1].blind.since_last_time, ["still think heat"]);
+  } finally { globalThis.window.claude = prev; }
+  assert.doesNotMatch(seen[0], /oldest first, and how the researcher weighed/);
+  assert.match(seen[1], /YOUR EARLIER SECOND OPINIONS[\s\S]*heat did it[\s\S]*not, because the incubator log was flat/);
+});

@@ -1,5 +1,5 @@
 // Cycle records form an append-only hash chain so any later edit is visible.
-export const CHAINED = ["commitment", "challenge", "response", "resolution"];
+export const CHAINED = ["commitment", "challenge", "response", "resolution", "claim_event"];
 export const GENESIS = "0".repeat(64);
 
 function canonical(v) {

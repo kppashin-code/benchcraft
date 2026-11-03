@@ -22,6 +22,7 @@ const BLIND_SHAPE = {
   },
   record_is_silent_on: ["What you needed to know and were not told. This is feedback on the researcher's record-keeping, not on their science."],
   questions_for_you: ["Two or three questions that test the researcher's reasons for whatever they end up concluding, specific to this record. Ask what would have to be true, what they are assuming, or what a sceptical colleague would ask. Questions only: never hint at which answer is right."],
+  since_last_time: ["Only if you were given YOUR EARLIER SECOND OPINIONS. One item per earlier possibility: whether you still hold it given how the researcher weighed it and what the record now says, and why. Say plainly when you were wrong or when their reason settles it. Empty list if you were given none."],
   recurs_in_this_protocol: ["Only if you were given PRIOR RUNS OF THIS PROTOCOL. Each item names a specific earlier run by title and says what it shares with this one: the same direction of effect, the same batch, the same thing going wrong at the same step. Say plainly if a pattern has now appeared more than twice. Empty list if you were given no prior runs, or if there is genuinely no recurrence. Never invent a resemblance to fill this in."],
 };
 
@@ -99,11 +100,13 @@ function interpretationText(c) {
 // The commitment fields the blind pass may see; everything else is dropped here.
 export const BLIND_FIELDS = ["aim", "expected", "observed"];
 
-export function blindInput(exp, commitment, history = [], folder = "") {
+export function blindInput(exp, commitment, history = [], folder = "", earlier = []) {
   const c = Object.fromEntries(BLIND_FIELDS.map((k) => [k, commitment[k] || ""]));
   const parts = observationText(exp, c);
   const hist = historyText(history, folder);
   if (hist) parts.push(hist);
+  const prior = earlierOpinionsText(earlier);
+  if (prior) parts.push(prior);
   return [BLIND_SYSTEM, parts.join("\n\n"), shapeBlock(BLIND_SHAPE)].join("\n\n---\n\n");
 }
 
@@ -125,6 +128,7 @@ export function checkBlind(b) {
   if (!Array.isArray(b.confounders) || !isStrList(b.missing_controls) || !b.discriminating_experiment) return "missing sections";
   b.record_is_silent_on = isStrList(b.record_is_silent_on) ? b.record_is_silent_on : [];
   b.recurs_in_this_protocol = isStrList(b.recurs_in_this_protocol) ? b.recurs_in_this_protocol : [];
+  b.since_last_time = isStrList(b.since_last_time) ? b.since_last_time : [];
   b.questions_for_you = isStrList(b.questions_for_you) ? b.questions_for_you.slice(0, 4) : [];
   return "";
 }
@@ -182,7 +186,7 @@ export function dataText(exp) {
   }).join("\n");
 }
 
-export function briefInput(project, experiments) {
+export function briefInput(project, experiments, claims = []) {
   const blocks = [];
   for (const exp of experiments) {
     for (const c of exp.commitments) {
@@ -199,8 +203,9 @@ export function briefInput(project, experiments) {
       blocks.push(block);
     }
   }
-  if (!blocks.length) return null;
-  return join(BRIEF_SYSTEM, `PROJECT: ${project.name}\n${project.description || ""}\n\n=== THE RECORD ===\n\n` + blocks.join("\n\n---\n\n"));
+  const ct = claimsText(claims);
+  if (!blocks.length && !ct) return null;
+  return join(BRIEF_SYSTEM, `PROJECT: ${project.name}\n${project.description || ""}\n\n=== THE RECORD ===\n\n` + blocks.join("\n\n---\n\n") + (ct ? "\n\n=== CLAIMS ===\n\n" + ct : ""));
 }
 
 export const checkGlossary = (g) => (g && Array.isArray(g.entries) && g.entries.every((e) => isStr(e.term) && isStr(e.plain)) ? "" : "entries missing");
@@ -226,7 +231,7 @@ const SLIDES_SHAPE = {
   }],
 };
 
-export function slidesInput(title, experiments, previous = null) {
+export function slidesInput(title, experiments, previous = null, claims = []) {
   const blocks = experiments.map((exp) => {
     const parts = [`ENTRY: ${exp.title} (${(exp.created_at || "").slice(0, 10)})`, `QUESTION: ${exp.question || "(not stated)"}`];
     const ctx = Object.entries(exp.context || {}).map(([k, v]) => `${k}: ${v}`).join("; ");
@@ -244,7 +249,67 @@ export function slidesInput(title, experiments, previous = null) {
     return parts.join("\n");
   });
   const prev = previous ? "\n\n=== THE PREVIOUS VERSION OF THIS DECK ===\nKeep every slide whose part of the record has not changed exactly as it was, in the same order. Change, add or drop only what the record now says differently.\n" + JSON.stringify({ title: previous.title, slides: previous.slides.map((s) => ({ title: s.title, bullets: s.bullets, notes: s.notes })) }) : "";
-  return join(SLIDES_SYSTEM, `DECK FOR: ${title}\n\n=== THE RECORD ===\n\n` + blocks.join("\n\n---\n\n") + prev, SLIDES_SHAPE);
+  const ct = claimsText(claims);
+  return join(SLIDES_SYSTEM, `DECK FOR: ${title}\n\n=== THE RECORD ===\n\n` + blocks.join("\n\n---\n\n") + (ct ? "\n\n=== CLAIMS ===\n\n" + ct : "") + prev, SLIDES_SHAPE);
 }
 
 export const checkSlides = (d) => (d && isStr(d.title) && Array.isArray(d.slides) && d.slides.length && d.slides.every((x) => isStr(x.title) && isStrList(x.bullets || [])) ? "" : "slides missing");
+
+// ---------- claims: what a claim rests on, and an agent that keeps score ----------
+
+const CLAIM_CHALLENGE_SYSTEM = `You are a sceptical colleague questioning one claim in a researcher's notebook. Your job is to make the researcher answer for it: say what it rests on, where it is weakest, and what would make them withdraw it.
+
+You do not decide whether the claim is true, and you do not supply the answer to any question you ask. Ask only what the record and the researcher's own account leave open. Never invent evidence, results, numbers or citations.
+
+You keep score. If you were shown YOUR EARLIER CHALLENGES TO THIS CLAIM and the researcher's answers, do not ask again what they already answered unless you can say exactly what their answer leaves out. If they revised or withdrew the claim in response to you, say whether the current wording still has the problem you raised. Never quietly change your position: if you now think an earlier question of yours was wrong or answered, say so. Never use an em dash.`;
+
+const CLAIM_CHALLENGE_SHAPE = {
+  questions: ["Two to four pointed questions the researcher should be able to answer if they stand behind this claim. Specific to this claim and this record."],
+  weakest_link: "The single step between what the claim rests on and the claim itself that is least supported, in one or two sentences.",
+  would_withdraw_if: "The concrete observation or result that should make the researcher withdraw or narrow the claim.",
+  on_earlier: ["Only if shown your earlier challenges: one item per earlier challenge, saying whether their answer settles it and why, or what it still leaves open. Empty list otherwise."],
+};
+
+function restsOnText(claim, sources) {
+  const lines = (claim.rests_on || []).map((r) => `  - ${r.k}: ${sources[`${r.k}:${r.id}`] || r.label || "(no longer in the record)"}`);
+  return lines.length ? "WHAT THE RESEARCHER SAYS THIS RESTS ON:\n" + lines.join("\n") : "WHAT IT RESTS ON: the researcher has not linked anything yet.";
+}
+
+export function claimChallengeInput(claim, exp, sources, earlier, question) {
+  const parts = [`THE CLAIM: ${claim.text}`];
+  if (question) parts.push(`THE QUESTION IT ANSWERS: ${question}`);
+  if (exp) parts.push(`FROM THE ENTRY: ${exp.title}${exp.question ? `, asking: ${exp.question}` : ""}`);
+  parts.push(restsOnText(claim, sources));
+  if (claim.basis === "relied") parts.push(`THE RESEARCHER IS RELYING ON: ${claim.relied_on || "(not named)"}${claim.why_trust ? `. WHY THEY TRUST IT: ${claim.why_trust}` : ""}`);
+  if (claim.basis === "agent") parts.push("THIS CLAIM FIRST CAME FROM AN AI SUGGESTION.");
+  parts.push(claim.my_account ? `THEIR ACCOUNT OF IT, IN THEIR OWN WORDS:\n${claim.my_account}` : "THEY HAVE NOT YET EXPLAINED IT IN THEIR OWN WORDS.");
+  if (earlier.length) {
+    parts.push("YOUR EARLIER CHALLENGES TO THIS CLAIM, oldest first, with what the researcher answered:\n" + earlier.map((e, i) =>
+      `  ${i + 1}. (${e.date}) you asked: ${e.asked}\n     they answered: ${e.answer ? `${e.outcome}. ${e.answer}` : "(not yet answered)"}${e.new_text ? `\n     and reworded the claim to: ${e.new_text}` : ""}`).join("\n"));
+  }
+  return join(CLAIM_CHALLENGE_SYSTEM, parts.join("\n\n"), CLAIM_CHALLENGE_SHAPE);
+}
+
+export function checkClaimChallenge(d) {
+  if (!d || !isStrList(d.questions) || !d.questions.length || !isStr(d.weakest_link)) return "questions missing";
+  d.would_withdraw_if = isStr(d.would_withdraw_if) ? d.would_withdraw_if : "";
+  d.on_earlier = isStrList(d.on_earlier) ? d.on_earlier : [];
+  return "";
+}
+
+// Earlier second opinions on the same entry, so the model has to stand by or revise what it said.
+export function earlierOpinionsText(earlier) {
+  if (!earlier.length) return "";
+  return "YOUR EARLIER SECOND OPINIONS ON THIS ENTRY, oldest first, and how the researcher weighed each possibility. "
+    + "Do not silently drop or repeat these. For each one, say in since_last_time whether you still hold it and why, or what changed:\n\n"
+    + earlier.map((o) => `  ${o.date}:\n` + o.items.map((it) => `    - ${it.label}: ${it.statement}\n      researcher: ${it.stance ? `${it.stance}${it.reason ? `, because ${it.reason}` : ""}` : "(not weighed)"}`).join("\n")).join("\n\n");
+}
+
+// What the researcher stands behind, so a brief or deck only states what someone can answer for.
+export function claimsText(claims) {
+  if (!claims.length) return "";
+  const line = (c) => `  - [${c.status === "withdrawn" ? "WITHDRAWN" : c.answerable ? "THEY CAN ANSWER FOR THIS" : "NOT YET IN THEIR OWN WORDS OR NOT LINKED TO EVIDENCE"}${c.basis === "relied" ? `, RELYING ON ${c.relied_on || "someone else"}` : ""}${c.basis === "agent" ? ", FIRST SUGGESTED BY AN AI" : ""}] ${c.text}${c.status === "withdrawn" && c.withdrawn_reason ? ` (withdrawn because: ${c.withdrawn_reason})` : ""}`;
+  return "CLAIMS THE RESEARCHER HAS RECORDED. State as findings only claims marked THEY CAN ANSWER FOR THIS. Attribute relied-on claims to their source. "
+    + "Never present a withdrawn claim as current; mention it only as something they withdrew. Put claims not yet in their own words under an open-questions heading, phrased as open:\n"
+    + claims.map(line).join("\n");
+}

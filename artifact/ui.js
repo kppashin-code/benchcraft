@@ -4,6 +4,7 @@ import { openFreezer } from "./freezer.js";
 import { openSlides } from "./slides.js";
 import { showToday } from "./today.js";
 import { openLab } from "./lab.js";
+import { renderClaimsCard, wireClaims, evidenceOf, openClaims } from "./claims.js";
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c =>
@@ -262,7 +263,7 @@ function renderStages() {
 
 async function openExperiment(id) {
   if (POLL) { clearInterval(POLL); POLL = null; }
-  EXP = await api(`/experiments/${id}`);
+  [EXP, CONTACTS, QUESTIONS] = await Promise.all([api(`/experiments/${id}`), api(`/projects/${PROJECT.id}/contacts`), api(`/projects/${PROJECT.id}/questions`)]);
   if ((EXP.recordings || []).some(r => r.transcript_state === "running")) pollTranscripts();
   document.querySelectorAll(".log-item[data-id]").forEach(el =>
     el.classList.toggle("on", +el.dataset.id === id));
@@ -363,6 +364,7 @@ function render() {
     ${renderConnectorOutput()}
     ${renderReading(c)}
     ${c ? renderResolution(c, resp) : ""}
+    ${renderClaimsCard(EXP, { ai: AI, evidence: evidenceOf(EXP, ZALL), contacts: CONTACTS, questions: QUESTIONS })}
     ${renderSecondOpinion()}
   `;
   wire(c, ch);
@@ -390,6 +392,7 @@ function renderCommitment(c) {
     </dl>
     <div class="tiny muted" style="margin-top:16px">
       Saved ${c.locked_at.replace("T", " ").slice(0, 16)}, kept as written.
+      <button class="link" data-claimfrom="reading" data-cid="${c.id}">stand behind this as a claim</button>
     </div>
   </div>`;
 }
@@ -731,6 +734,7 @@ function renderSecondOpinion() {
     ${AI ? `<div class="card"><div class="row" style="flex-wrap:wrap">
       <button class="ai" id="btn-second">Get a second opinion</button>
       <span class="tiny muted" style="flex:1;min-width:200px">Reads this entry as it stands${EXP.commitments.length ? ", then compares with your latest reading" : ""}.</span></div>
+      ${EXP.question ? "" : `<div class="tiny" style="color:var(--amber);margin-top:6px">This entry has no question yet, so an opinion on it has nothing to answer to. <button class="link" id="btn-addq">add the question</button></div>`}
       <div class="err" id="second-err"></div></div>` : ""}`;
 }
 
@@ -739,10 +743,16 @@ function weighBox(ch, i) {
   const w = [...(ch.weighs || [])].reverse().find(x => x.index === i);
   const opt = (v, l) => `<button class="wt ${w && w.stance === v ? "on" : ""}" data-weigh="${ch.id}" data-i="${i}" data-stance="${v}">${l}</button>`;
   return `<div class="weigh">
-    <div class="row" style="gap:6px;flex-wrap:wrap">${opt("moves", "This moves me")}${opt("not", "This does not")}${opt("unsure", "Not sure yet")}</div>
+    <div class="row" style="gap:6px;flex-wrap:wrap">${opt("moves", "This moves me")}${opt("not", "This does not")}${opt("unsure", "Not sure yet")}
+      ${w && w.stance === "moves" ? `<button class="link" data-claimfrom="opinion" data-ch="${ch.id}" data-i="${i}">make it a claim</button>` : ""}</div>
     <input class="weigh-why" data-why="${ch.id}:${i}" placeholder="because…" value="${esc(w ? w.reason : "")}">
     ${w && w.stance !== "unsure" && (w.reason || "").trim().split(/\s+/).filter(Boolean).length < 4 ? `<div class="tiny" style="color:var(--amber)">Say why, in a few words. The reason is the part worth keeping.</div>` : ""}
   </div>`;
+}
+
+// The model answering for what it said last time, so it cannot quietly change its mind.
+function sinceLast(b) {
+  return (b.since_last_time || []).length ? `<div class="hypo since"><div class="n">Since its last opinion</div>${ul(b.since_last_time, "q")}</div>` : "";
 }
 
 function renderOpinionOnly(ch) {
@@ -753,7 +763,7 @@ function renderOpinionOnly(ch) {
       <div class="body"><strong>${esc(e.label)}.</strong> ${esc(e.statement)}</div>
       ${ul(e.supports, "pro")}${ul(e.contradicts, "con")}
       <div class="kill">Ruled out by: ${esc(e.would_rule_out)}</div>${weighBox(ch, i)}</div>`).join("")}
-${(b.questions_for_you || []).length ? `<div class="hypo qs"><div class="n">Questions for you</div>${ul(b.questions_for_you, "q")}
+${sinceLast(b)}${(b.questions_for_you || []).length ? `<div class="hypo qs"><div class="n">Questions for you</div>${ul(b.questions_for_you, "q")}
       <div class="tiny muted" style="margin-top:6px">Worth answering in your notes or your next reading. They test your reasons; they do not have answers attached.</div></div>` : ""}
     <div class="hypo"><div class="n">What would distinguish these?</div>
       <div class="body">${esc(b.discriminating_experiment.description)}</div>
@@ -777,7 +787,7 @@ function renderChallenge(ch, c, resp) {
       ${weighBox(ch, i)}
     </div>`).join("")}
 
-  ${(b.questions_for_you || []).length ? `<div class="hypo qs"><div class="n">Questions for you</div>${ul(b.questions_for_you, "q")}
+  ${sinceLast(b)}${(b.questions_for_you || []).length ? `<div class="hypo qs"><div class="n">Questions for you</div>${ul(b.questions_for_you, "q")}
       <div class="tiny muted" style="margin-top:6px">Worth answering in your notes or your next reading. They test your reasons; they do not have answers attached.</div></div>` : ""}
   <div class="hypo">
     <div class="n">What would distinguish these?</div>
@@ -1796,6 +1806,29 @@ function wire(c, ch) {
   const hist = $("#btn-history");
   if (hist) hist.onclick = openHistory;
 
+  const cc = $("#claims-card");
+  const reopen = async () => { EXP = await api(`/experiments/${EXP.id}`); render(); };
+  if (cc) wireClaims(cc, { pid: PROJECT.id, experimentId: EXP.id, ask: askText, contacts: CONTACTS, done: reopen });
+  $("#main").querySelectorAll("[data-claimfrom]").forEach(b => b.onclick = async () => {
+    try {
+      if (b.dataset.claimfrom === "reading") {
+        const r = EXP.commitments.find(x => x.id === +b.dataset.cid);
+        await api(`/projects/${PROJECT.id}/claims`, "POST", { experiment_id: EXP.id, text: r.interpretation, basis: "own", rests_on: [{ k: "reading", id: String(r.id), label: `reading ${r.locked_at.slice(0, 10)}` }] });
+      } else {
+        const ch = [...(EXP.early_challenges || []), ...EXP.commitments.flatMap(x => x.challenges)].find(x => x.id === +b.dataset.ch);
+        const x = ch.blind.explanations[+b.dataset.i];
+        await api(`/projects/${PROJECT.id}/claims`, "POST", { experiment_id: EXP.id, text: x.statement, basis: "agent", rests_on: [{ k: "opinion", id: `${ch.id}.${b.dataset.i}`, label: x.label }], from: { challenge_id: ch.id, index: +b.dataset.i } });
+      }
+      await reopen();
+      $("#claims-card").scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (e) { const err = $("#cl-add-err"); if (err) err.textContent = e.message; }
+  });
+  const addq = $("#btn-addq");
+  if (addq) addq.onclick = async () => {
+    const q = await askText("What question is this entry asking?");
+    if (q) { EXP = await api(`/experiments/${EXP.id}/question`, "PUT", { question: q }); render(); }
+  };
+
   const share = $("#btn-share");
   if (share) share.onclick = async () => {
     share.disabled = true; share.textContent = "Sharing…";
@@ -2064,6 +2097,7 @@ $("#btn-graph").onclick = async () => {
 };
 
 let REAGENTS = [];
+let CONTACTS = [], QUESTIONS = [];
 
 function pctLeft(r) {
   if (!r.amount_total || r.amount_left == null) return null;
@@ -2482,6 +2516,7 @@ const GOALS = [
   ["record", "Keeping a record someone could follow"],
   ["weighing", "Weighing advice on its reasons"],
   ["writing", "Turning work into writing and slides"],
+  ["standing", "Being able to answer for what I claim"],
 ];
 function welcome(settings) {
   const pr = settings.profile || {};
@@ -2574,13 +2609,16 @@ async function setPage(page) {
   $("#btn-pen").hidden = TODO_ON;
   const toEntry = async (id) => { await setPage("notebook"); await openExperiment(id); };
   if (page === "todo") await showTodos($("#todoview"), PROJECT.id, toEntry);
-  if (page === "today") await showToday($("#todoview"), PROJECT.id, toEntry, (tool) => openLab(PROJECT.id, null, tool === "lab-bookings" ? "bookings" : undefined));
+  if (page === "today") await showToday($("#todoview"), PROJECT.id, toEntry, (tool) => tool.startsWith("claims")
+    ? openClaims(PROJECT.id, { ai: AI, ask: askText, openEntry: toEntry, tab: tool === "claims-questions" ? "questions" : "claims" })
+    : openLab(PROJECT.id, null, tool === "lab-bookings" ? "bookings" : undefined));
 }
 const setTodo = (on) => setPage(on ? "todo" : "notebook");
 $("#btn-todo").onclick = () => setPage("todo");
 $("#pg-notebook").onclick = () => setPage("notebook");
 $("#pg-today").onclick = () => setPage("today");
 $("#btn-lab").onclick = () => openLab(PROJECT.id, TODO_ON ? null : EXP);
+$("#btn-claims").onclick = () => openClaims(PROJECT.id, { ai: AI, ask: askText, openEntry: async (id) => { await setPage("notebook"); await openExperiment(id); } });
 $("#btn-search").onclick = openSearch;
 $("#btn-week").onclick = openWeek;
 
